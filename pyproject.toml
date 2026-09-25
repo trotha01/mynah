@@ -1,0 +1,38 @@
+[project]
+name = "mynah"
+version = "0.1.0"
+description = "Reads Claude Code's latest reply out loud on a hotkey, via Kokoro (MLX)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mlx-audio",
+    "misaki[en]",
+    # Kokoro's English pipeline needs this spaCy model and otherwise tries to
+    # self-install it at runtime via a `uv pip install` subprocess — which
+    # fails ("No virtual environment found") once mynah is running as an
+    # installed uv-tool script rather than under `uv run`/`uv sync`, i.e.
+    # exactly how it normally launches. Pinning it here as a real dependency
+    # avoids that runtime download path entirely.
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "pynput~=1.8.1",
+    "rumps~=0.4.0",
+    # macOS-only Cocoa bridge
+    'pyobjc-framework-Cocoa~=11.1; platform_system == "Darwin"',
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+mynah = "mynah.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[project.optional-dependencies]
+dev = ["build", "pytest", "ruff", "mypy"]

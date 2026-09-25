@@ -16,9 +16,12 @@ recently modified .jsonl anywhere under projects/.
 """
 
 import json
+import logging
 import re
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger("mynah")
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
@@ -34,11 +37,15 @@ def _current_iterm_cwd() -> str | None:
             ["osascript", "-e", _ITERM_CWD_SCRIPT],
             capture_output=True, text=True, timeout=2,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.info(f"iTerm cwd query failed to run: {e}")
         return None
     if result.returncode != 0:
+        logger.info(f"iTerm cwd query returned an error: {result.stderr.strip()}")
         return None
-    return result.stdout.strip() or None
+    cwd = result.stdout.strip() or None
+    logger.info(f"iTerm current tab cwd: {cwd}")
+    return cwd
 
 
 def _latest_in(paths) -> Path | None:
@@ -61,8 +68,12 @@ def _latest_transcript_path() -> Path | None:
         project_dir = PROJECTS_DIR / cwd.replace("/", "-")
         scoped = _latest_in(project_dir.glob("*.jsonl"))
         if scoped is not None:
+            logger.info(f"Using transcript scoped to current tab: {scoped}")
             return scoped
-    return _latest_in(PROJECTS_DIR.glob("*/*.jsonl"))
+        logger.info(f"No transcript found under {project_dir} — falling back to global latest")
+    path = _latest_in(PROJECTS_DIR.glob("*/*.jsonl"))
+    logger.info(f"Using globally latest transcript: {path}")
+    return path
 
 
 def _extract_text(message: dict) -> str:

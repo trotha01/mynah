@@ -4,15 +4,26 @@ session transcripts on this machine.
 Transcripts live at ~/.claude/projects/<escaped-cwd>/<session-id>.jsonl, one
 line of JSON per event, where <escaped-cwd> is the session's working
 directory with every "/" turned into "-" (e.g. /Users/trevor/Downloads ->
--Users-trevor-Downloads) — the same transform Claude Code itself uses, so
-recomputing it from a directory reliably lands on the matching folder.
+-Users-trevor-Downloads).
 
-"Latest" prefers whatever's running in iTerm2's current tab: switching tabs
-switches what mynah reads, by asking iTerm2 for that tab's cwd and looking
-only at transcripts under that project directory. If iTerm2's cwd can't be
-determined (not running, not frontmost, Automation permission not granted
-yet) or that directory has no transcripts, it falls back to the most
-recently modified .jsonl anywhere under projects/.
+"Latest" follows iTerm2's current tab, resolved as precisely as possible:
+
+1. Exact match — ask iTerm2 for the current tab's tty, find the `claude`
+   process attached to that tty, and read ITS sessionId straight out of
+   Claude Code's own ~/.claude/sessions/<pid>.json state file. This is the
+   only reliable way to tell two Claude Code sessions apart when they
+   happen to share a cwd (e.g. one tab resumed via `claude -r` from the
+   same directory another tab is already sitting in) — matching by
+   directory alone can't distinguish them, and picking "whichever file in
+   that directory was modified most recently" just favors whichever
+   session happens to be more chatty at the moment, not whichever tab
+   you're actually looking at.
+2. Falls back to the most recently modified transcript under that tab's
+   own cwd, if step 1 didn't resolve (no claude process on that tty, or its
+   session state file is missing/stale).
+3. Falls back to the most recently modified transcript anywhere under
+   projects/, if iTerm2's tab itself can't be determined at all (not
+   running, Automation permission not granted yet).
 """
 
 import json
@@ -24,28 +35,75 @@ from pathlib import Path
 logger = logging.getLogger("mynah")
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
-_ITERM_CWD_SCRIPT = (
-    'tell application "iTerm2" to tell current session of current window '
-    'to return variable named "session.path"'
-)
+
+def _run_osascript(script: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.info(f"osascript query failed to run: {e}")
+        return None
+    if result.returncode != 0:
+        logger.info(f"osascript query returned an error: {result.stderr.strip()}")
+        return None
+    return result.stdout.strip() or None
 
 
 def _current_iterm_cwd() -> str | None:
+    return _run_osascript(
+        'tell application "iTerm2" to tell current session of current window '
+        'to return variable named "session.path"'
+    )
+
+
+def _current_iterm_tty() -> str | None:
+    return _run_osascript(
+        'tell application "iTerm2" to tell current session of current window to return tty'
+    )
+
+
+def _claude_pid_for_tty(tty: str) -> int | None:
+    """The PID of the `claude` CLI process attached to this tty, if any — a
+    tty can have other processes too (the shell, tool subprocesses), so
+    only a process whose own command is exactly "claude" or "claude <args>"
+    counts."""
+    tty_name = tty.removeprefix("/dev/")
     try:
         result = subprocess.run(
-            ["osascript", "-e", _ITERM_CWD_SCRIPT],
+            ["ps", "-t", tty_name, "-o", "pid=,command="],
             capture_output=True, text=True, timeout=2,
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.info(f"iTerm cwd query failed to run: {e}")
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
-        logger.info(f"iTerm cwd query returned an error: {result.stderr.strip()}")
         return None
-    cwd = result.stdout.strip() or None
-    logger.info(f"iTerm current tab cwd: {cwd}")
-    return cwd
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_str, _, command = line.partition(" ")
+        if command == "claude" or command.startswith("claude "):
+            try:
+                return int(pid_str)
+            except ValueError:
+                continue
+    return None
+
+
+def _transcript_for_pid(pid: int) -> Path | None:
+    state_path = SESSIONS_DIR / f"{pid}.json"
+    try:
+        data = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    session_id, cwd = data.get("sessionId"), data.get("cwd")
+    if not session_id or not cwd:
+        return None
+    path = PROJECTS_DIR / cwd.replace("/", "-") / f"{session_id}.jsonl"
+    return path if path.exists() else None
 
 
 def _latest_in(paths) -> Path | None:
@@ -63,16 +121,31 @@ def _latest_in(paths) -> Path | None:
 
 
 def _latest_transcript_path() -> Path | None:
+    tty = _current_iterm_tty()
     cwd = _current_iterm_cwd()
+    logger.info(f"iTerm current tab: tty={tty} cwd={cwd}")
+
+    if tty:
+        pid = _claude_pid_for_tty(tty)
+        if pid is not None:
+            exact = _transcript_for_pid(pid)
+            if exact is not None:
+                logger.info(f"Using exact transcript for claude pid {pid} on this tab: {exact}")
+                return exact
+            logger.info(f"No usable session state for claude pid {pid} on this tab")
+        else:
+            logger.info(f"No claude process found on tty {tty}")
+
     if cwd:
         project_dir = PROJECTS_DIR / cwd.replace("/", "-")
         scoped = _latest_in(project_dir.glob("*.jsonl"))
         if scoped is not None:
-            logger.info(f"Using transcript scoped to current tab: {scoped}")
+            logger.info(f"Using transcript scoped to current tab's cwd: {scoped}")
             return scoped
-        logger.info(f"No transcript found under {project_dir} — falling back to global latest")
+        logger.info(f"No transcript found under {project_dir}")
+
     path = _latest_in(PROJECTS_DIR.glob("*/*.jsonl"))
-    logger.info(f"Using globally latest transcript: {path}")
+    logger.info(f"Falling back to globally latest transcript: {path}")
     return path
 
 

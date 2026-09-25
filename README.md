@@ -9,12 +9,15 @@ which listens.
 
 Tap **Right Shift + Right Command**, and mynah:
 
-1. Finds Claude Code's session transcript for whatever directory iTerm2's
-   current tab is sitting in — switch tabs and mynah follows, reading
-   whatever project you're now looking at. Falls back to the most recently
-   modified transcript anywhere if iTerm2's tab can't be queried (not
-   running, Automation permission not granted yet) or that directory has no
-   transcript of its own.
+1. Finds the exact Claude Code session running in iTerm2's current tab —
+   switch tabs and mynah follows. It resolves this precisely (which `claude`
+   process is attached to that tab's tty, then that process's own session
+   state), not just by matching directories, since two tabs can share a cwd
+   (e.g. one resumed via `claude -r` from a directory another tab is
+   already in) and directory-matching alone can't tell those apart. Falls
+   back to the most recently modified transcript under that tab's directory,
+   then to the most recently modified transcript anywhere, if iTerm2's tab
+   can't be determined at all.
 2. Pulls the last assistant reply out of it (skipping subagent/sidechain
    output and tool-only turns with no text).
 3. Strips it down for speech (drops markdown formatting, collapses fenced
@@ -60,13 +63,17 @@ Look for 🔊 in your menu bar. First launch downloads the Kokoro model
 ## Why it follows your iTerm2 tab
 
 You typically have several Claude Code sessions open across different
-terminal tabs. mynah answers "what did Claude just say **here**" by asking
-iTerm2 for the current tab's working directory and reading that project's
-transcript — so the message it reads changes as you switch tabs, rather
-than always being whichever session happened to type most recently. The
-first time it does this, macOS will prompt you to grant Automation
-permission for controlling iTerm2 (System Settings → Privacy & Security →
-Automation); without it, mynah falls back to the most recently modified
+terminal tabs — sometimes even sharing the same working directory (a tab
+resumed with `claude -r` from a directory another tab is already sitting
+in). mynah answers "what did Claude just say **here**" by asking iTerm2 for
+the current tab's tty, finding the specific `claude` process attached to
+it, and reading that exact process's own session id from Claude Code's
+`~/.claude/sessions/<pid>.json` state — so the message it reads changes as
+you switch tabs, rather than always being whichever session happened to
+type most recently. The first time it does this, macOS will prompt you to
+grant Automation permission for controlling iTerm2 (System Settings →
+Privacy & Security → Automation); without it, mynah falls back to the most
+recently modified
 transcript anywhere.
 
 ## Development

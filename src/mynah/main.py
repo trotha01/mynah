@@ -117,6 +117,21 @@ class MynahApp(rumps.App):
             player.flush()  # cuts audio that's already playing immediately
         self.status_item.title = "Status: Stopped"
 
+    def _refresh_audio_devices(self):
+        """PortAudio snapshots the device list once and doesn't notice
+        Bluetooth reconnects (AirPods sleeping/waking, etc.) on its own —
+        caught this live: mynah kept "successfully" playing to a default
+        output device that had gone stale since launch, with no error,
+        just silence. Re-initializing before every read is cheap and keeps
+        it aimed at whatever's actually live right now, instead of
+        requiring a full app restart after every Bluetooth reconnect."""
+        import sounddevice as sd
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            logger.warning(f"Could not refresh audio device list: {e}")
+
     def speak_latest(self):
         if self.model is None:
             self.status_item.title = "Status: Still loading the model..."
@@ -136,6 +151,7 @@ class MynahApp(rumps.App):
             self.title = "🔊 (Speaking)"
             logger.info(f"Reading {len(spoken)} chars: {preview}...")
 
+            self._refresh_audio_devices()
             from mlx_audio.tts.audio_player import AudioPlayer
             self.player = AudioPlayer(sample_rate=self.model.sample_rate)
             self.speaking = True

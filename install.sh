@@ -41,7 +41,7 @@ esac
 
 step "macOS permissions"
 echo "mynah needs Input Monitoring granted to whatever app you launch it from"
-echo "(this terminal, if you're reading this here) — to detect the Right Option + Right Command"
+echo "(this terminal, if you're reading this here) — to detect the Right Command + Right Control"
 echo "hotkey globally. Opening System Settings now:"
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" 2>/dev/null || true
 
@@ -49,4 +49,4 @@ step "Done"
 echo "After granting Input Monitoring, launch it with:"
 echo "  mynah"
 echo ""
-echo "Then tap Right Option + Right Command to hear Claude Code's latest reply. Tap again to stop."
+echo "Then tap Right Command + Right Control to hear Claude Code's latest reply. Tap again to stop."

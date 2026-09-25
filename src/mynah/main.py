@@ -15,13 +15,13 @@ logger = logging.getLogger("mynah")
 MODEL_ID = os.getenv("MYNAH_MODEL", "mlx-community/Kokoro-82M-bf16")
 VOICE = os.getenv("MYNAH_VOICE", "af_heart")
 SPEED = float(os.getenv("MYNAH_SPEED", "1.0"))
-HOTKEY_DISPLAY = "Right Command + Right Control"
+HOTKEY_DISPLAY = "Right Shift + Right Command"
 # Right Option is parakeet-dictation's hotkey — even as part of a chord,
 # holding it also fires parakeet's own listener (they're independent
 # CGEventTaps, both watching every key), which fought with mynah's own
-# recording. Avoid Right Option entirely rather than just requiring it
-# alongside another key.
-REQUIRED_KEYS = {keyboard.Key.cmd_r, keyboard.Key.ctrl_r}
+# recording. Right Command + Right Control turned out to already be bound
+# to something else on this machine. Right Shift + Right Command instead.
+REQUIRED_KEYS = {keyboard.Key.shift_r, keyboard.Key.cmd_r}
 
 exit_flag = False
 

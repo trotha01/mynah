@@ -7,7 +7,7 @@ which listens.
 
 ## What it does
 
-Tap **Right Command + Right Control**, and mynah:
+Tap **Right Shift + Right Command**, and mynah:
 
 1. Finds Claude Code's session transcript for whatever directory iTerm2's
    current tab is sitting in — switch tabs and mynah follows, reading
@@ -23,7 +23,7 @@ Tap **Right Command + Right Control**, and mynah:
    running locally through [mlx-audio](https://github.com/Blaizzy/mlx-audio) —
    no network calls at read time, no API cost.
 
-Tap Right Command + Right Control again while it's talking to stop immediately.
+Tap Right Shift + Right Command again while it's talking to stop immediately.
 
 You can also trigger a read from the 🔊 menu-bar icon: **Read Latest
 Message**.
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/trotha01/mynah/main/install.sh | ba
 
 Needs **Input Monitoring** permission (System Settings → Privacy &
 Security) granted to whatever app you launch it from, so it can detect the
-Right Command + Right Control hotkey globally. The installer opens that settings pane for
+Right Shift + Right Command hotkey globally. The installer opens that settings pane for
 you. Nothing else — mynah doesn't type at your cursor or read the
 microphone, so it doesn't need Accessibility or Microphone access.
 

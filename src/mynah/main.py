@@ -15,7 +15,10 @@ logger = logging.getLogger("mynah")
 MODEL_ID = os.getenv("MYNAH_MODEL", "mlx-community/Kokoro-82M-bf16")
 VOICE = os.getenv("MYNAH_VOICE", "af_heart")
 SPEED = float(os.getenv("MYNAH_SPEED", "1.0"))
-HOTKEY = keyboard.Key.cmd_r
+HOTKEY_DISPLAY = "Right Option + Right Command"
+# Right Option alone is parakeet-dictation's hotkey — requiring both keeps
+# the two tools from firing off each other.
+REQUIRED_KEYS = {keyboard.Key.alt_r, keyboard.Key.cmd_r}
 
 exit_flag = False
 
@@ -62,29 +65,35 @@ class MynahApp(rumps.App):
         from mlx_audio.tts.utils import load_model
         logger.info(f"Loading {MODEL_ID}...")
         self.model = load_model(MODEL_ID)
-        self.status_item.title = "Status: Ready — hold Right ⌘ to read"
-        logger.info(f"Model loaded. Press Right Command to read Claude's latest message.")
+        self.status_item.title = f"Status: Ready — tap {HOTKEY_DISPLAY} to read"
+        logger.info(f"Model loaded. Press {HOTKEY_DISPLAY} to read Claude's latest message.")
 
     # ---------------------------
-    # Hotkey: a single tap toggles read/stop, never blocks the tap callback
-    # (see parakeet-dictation's freeze postmortem — pynput callbacks run
-    # synchronously inside a macOS CGEventTap; blocking there can wedge
-    # system-wide keyboard input). held guards against key-repeat re-firing
-    # on_press repeatedly while the key stays down.
+    # Hotkey: a chord (both required keys held together) toggles read/stop,
+    # and never blocks the tap callback (see parakeet-dictation's freeze
+    # postmortem — pynput callbacks run synchronously inside a macOS
+    # CGEventTap; blocking there can wedge system-wide keyboard input).
+    # `triggered` guards against firing again on OS key-repeat, or on the
+    # second key's own on_press, while both keys stay held — it only resets
+    # once one of them is released, requiring a fresh press to fire again.
     # ---------------------------
     def _run_hotkey_listener(self):
-        held = False
+        held = set()
+        triggered = False
 
         def on_press(key):
-            nonlocal held
-            if key == HOTKEY and not held:
-                held = True
-                threading.Thread(target=self.toggle_speak, daemon=True).start()
+            nonlocal triggered
+            if key in REQUIRED_KEYS:
+                held.add(key)
+                if held == REQUIRED_KEYS and not triggered:
+                    triggered = True
+                    threading.Thread(target=self.toggle_speak, daemon=True).start()
 
         def on_release(key):
-            nonlocal held
-            if key == HOTKEY:
-                held = False
+            nonlocal triggered
+            if key in REQUIRED_KEYS:
+                held.discard(key)
+                triggered = False
 
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
             listener.join()
@@ -142,7 +151,7 @@ class MynahApp(rumps.App):
                 self.speaking = False
                 self.player = None
                 self.title = "🔊"
-                self.status_item.title = "Status: Ready — hold Right ⌘ to read"
+                self.status_item.title = f"Status: Ready — tap {HOTKEY_DISPLAY} to read"
         except Exception as e:
             logger.error(f"Error while speaking: {e}")
             self.status_item.title = f"Status: Error — {e}"

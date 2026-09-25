@@ -1,25 +1,50 @@
-"""Finds and reads the most recent assistant message across all Claude Code
+"""Finds and reads the most recent assistant message across Claude Code
 session transcripts on this machine.
 
 Transcripts live at ~/.claude/projects/<escaped-cwd>/<session-id>.jsonl, one
-line of JSON per event. "Latest" is defined globally (the most recently
-modified .jsonl file anywhere under projects/, not just the current one) —
-mynah is meant to answer "what did Claude just say", regardless of which
-project/terminal that was in.
+line of JSON per event, where <escaped-cwd> is the session's working
+directory with every "/" turned into "-" (e.g. /Users/trevor/Downloads ->
+-Users-trevor-Downloads) — the same transform Claude Code itself uses, so
+recomputing it from a directory reliably lands on the matching folder.
+
+"Latest" prefers whatever's running in iTerm2's current tab: switching tabs
+switches what mynah reads, by asking iTerm2 for that tab's cwd and looking
+only at transcripts under that project directory. If iTerm2's cwd can't be
+determined (not running, not frontmost, Automation permission not granted
+yet) or that directory has no transcripts, it falls back to the most
+recently modified .jsonl anywhere under projects/.
 """
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
+_ITERM_CWD_SCRIPT = (
+    'tell application "iTerm2" to tell current session of current window '
+    'to return variable named "session.path"'
+)
 
-def _latest_transcript_path() -> Path | None:
-    candidates = PROJECTS_DIR.glob("*/*.jsonl")
+
+def _current_iterm_cwd() -> str | None:
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _ITERM_CWD_SCRIPT],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _latest_in(paths) -> Path | None:
     latest = None
     latest_mtime = -1.0
-    for path in candidates:
+    for path in paths:
         try:
             mtime = path.stat().st_mtime
         except OSError:
@@ -28,6 +53,16 @@ def _latest_transcript_path() -> Path | None:
             latest_mtime = mtime
             latest = path
     return latest
+
+
+def _latest_transcript_path() -> Path | None:
+    cwd = _current_iterm_cwd()
+    if cwd:
+        project_dir = PROJECTS_DIR / cwd.replace("/", "-")
+        scoped = _latest_in(project_dir.glob("*.jsonl"))
+        if scoped is not None:
+            return scoped
+    return _latest_in(PROJECTS_DIR.glob("*/*.jsonl"))
 
 
 def _extract_text(message: dict) -> str:

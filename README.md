@@ -7,10 +7,14 @@ which listens.
 
 ## What it does
 
-Tap **Right Command**, and mynah:
+Tap **Right Option + Right Command**, and mynah:
 
-1. Finds the most recently modified Claude Code session transcript anywhere
-   under `~/.claude/projects/`.
+1. Finds Claude Code's session transcript for whatever directory iTerm2's
+   current tab is sitting in — switch tabs and mynah follows, reading
+   whatever project you're now looking at. Falls back to the most recently
+   modified transcript anywhere if iTerm2's tab can't be queried (not
+   running, Automation permission not granted yet) or that directory has no
+   transcript of its own.
 2. Pulls the last assistant reply out of it (skipping subagent/sidechain
    output and tool-only turns with no text).
 3. Strips it down for speech (drops markdown formatting, collapses fenced
@@ -19,7 +23,7 @@ Tap **Right Command**, and mynah:
    running locally through [mlx-audio](https://github.com/Blaizzy/mlx-audio) —
    no network calls at read time, no API cost.
 
-Tap Right Command again while it's talking to stop immediately.
+Tap Right Option + Right Command again while it's talking to stop immediately.
 
 You can also trigger a read from the 🔊 menu-bar icon: **Read Latest
 Message**.
@@ -32,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/trotha01/mynah/main/install.sh | ba
 
 Needs **Input Monitoring** permission (System Settings → Privacy &
 Security) granted to whatever app you launch it from, so it can detect the
-Right Command hotkey globally. The installer opens that settings pane for
+Right Option + Right Command hotkey globally. The installer opens that settings pane for
 you. Nothing else — mynah doesn't type at your cursor or read the
 microphone, so it doesn't need Accessibility or Microphone access.
 
@@ -53,12 +57,17 @@ Look for 🔊 in your menu bar. First launch downloads the Kokoro model
 | `MYNAH_VOICE`  | `af_heart`                        | Kokoro voice preset                   |
 | `MYNAH_SPEED`  | `1.0`                             | Playback speed multiplier             |
 
-## Why "the latest transcript anywhere", not just the current project
+## Why it follows your iTerm2 tab
 
 You typically have several Claude Code sessions open across different
-terminals/projects. mynah answers "what did Claude just say" globally — the
-most recently modified `.jsonl` file across every project — rather than
-requiring you to be in a specific directory.
+terminal tabs. mynah answers "what did Claude just say **here**" by asking
+iTerm2 for the current tab's working directory and reading that project's
+transcript — so the message it reads changes as you switch tabs, rather
+than always being whichever session happened to type most recently. The
+first time it does this, macOS will prompt you to grant Automation
+permission for controlling iTerm2 (System Settings → Privacy & Security →
+Automation); without it, mynah falls back to the most recently modified
+transcript anywhere.
 
 ## Development
 

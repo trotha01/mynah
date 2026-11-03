@@ -117,8 +117,8 @@ The hotkey reader above follows the iTerm2 tab; this half speaks every reply of 
     once with `hooks/build-speaker-app` (source: `hooks/speaker.applescript`, installed in
     `~/.local/share/mynah/`). Without the app, replies still speak but hold-to-talk does not. The speakd log
     says which session it runs in.
-  Only modifier hotkeys are watched. Talking over the speech by voice is voice-conversation mode's barge-in
-  (below), which only works with headphones: on laptop speakers the microphone hears Kokoro itself.
+  Only modifier hotkeys are watched. Talking over the speech by voice is voice-conversation mode's barge-in (below).
+  `kill -USR1 $(cat ~/.local/state/mynah/speakd.pid)` writes every thread's stack to the log (hang diagnosis).
 
 ## Voice conversation with the orchestrator (src/mynah/listen.py + hooks/voice-mode)
 
@@ -133,10 +133,12 @@ and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
   The mode also makes the Stop hook speak replies (like `voice-replies`, which only speaks and never listens).
 - **Loop:** `listening` -> `hearing` -> ~0.9 s of silence -> `transcribing` -> `jmacs ask` (a Tink sound) ->
   `waiting` -> reply `speaking` -> `listening`. `hooks/voice-mode status` shows the state.
-- **Barge-in:** with headphones (output named headphones/AirPods/buds/headset...) the mic stays open during a reply
-  and ~0.25 s of strong speech cuts it off and becomes your next utterance. On speakers the mic is shut while a
-  reply plays (measured: Kokoro barges in on itself within a second otherwise) and the barge-in is holding right
-  Option, as before. The choice is made per reply from the output device.
+- **Barge-in:** the mic stays open while a reply plays and ~0.25 s of strong speech cuts it off and becomes your
+  next utterance. On speakers the mic signal first goes through **WebRTC AEC3** (the echo canceller in Chrome and
+  LiveKit, via the `livekit` package; `src/mynah/aec.py`), fed with everything mynah plays, so Kokoro does not
+  barge in on itself (without it it did, within a second) and the transcript of what you said over it is clean.
+  Headphones skip the canceller. `barge_in=voice|echo|key` in the mode file overrides the choice; `key` shuts the
+  mic during replies and leaves holding right Option as the only interruption.
 - **Ignored:** blips, fillers ("mm-hmm", "uh"), and utterances quieter than -40 dBFS (people talking across the
   room measured -37 to -60 dBFS; speaking at the laptop measured -19 to -35). Everything heard and sent is in the log.
 - **Settings:** optional `name=value` lines in the mode file, read each time it is switched on:
@@ -144,6 +146,7 @@ and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
 - **Permission:** macOS asks for microphone access for "Mynah Speaker" the first time the mode is switched on
   (`hooks/build-speaker-app` adds the usage text; rebuild it after pulling).
 - **Caution:** it hears everyone in earshot. Switch it off before talking to someone else or taking a call.
-- **Tests:** `~/.local/share/uv/tools/mynah/bin/python -m unittest discover -s tests` (no models needed), and
+- **Tests:** `~/.local/share/uv/tools/mynah/bin/python -m unittest discover -s tests` (no models; the echo test
+  uses macOS `say`), and
   `tests/replay_listen.py` (real models, `say`-generated audio in place of the mic). Never test against `left`:
   use a throwaway tmux session with `JMACS_LEFT=jmtest` (`jmacs ask` honours it).

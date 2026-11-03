@@ -72,3 +72,12 @@ Barge-in: Trevor speaking cuts the reply off. Nothing happens unless voice-conve
   barge-in, decided per reply from the output device name; added a -40 dBFS level gate and settings in the mode file.
 - Measured: on laptop speakers Kokoro triggers its own barge-in within ~1 s, so voice barge-in there is not usable.
 - Not verified: the microphone prompt through "Mynah Speaker.app" (needs Trevor's click), real headphones.
+
+## Update: echo cancellation (2026-11-03)
+- Trevor asked for voice barge-in on laptop speakers. A home-made level gate and NLMS filter were tried first and
+  dropped (echo level varied 5x between replies); then existing work was used instead: WebRTC AEC3 via
+  LiveKit's `AudioProcessingModule` (PyPI `livekit`, prebuilt arm64 wheel). Synthetic room: echo -43 dB in 1 s, a
+  voice over it -2 dB. Real speakers: a 17 s reply played untouched, an interjection cut in and was transcribed.
+- Found on the way: stopping an output stream while its last callback returns deadlocks CoreAudio (the reply
+  never finished, later replies queued forever). Fixed by waiting 0.15 s after the drain and by keeping the audio
+  callback light (the far-end feed runs on a worker thread).

@@ -10,11 +10,12 @@ the microphone is not open at all and nothing here can act on speech. While it e
 Pieces, all local: Silero VAD (mlx-audio) frame by frame, Parakeet TDT 0.6B v3 (mlx-audio) on the finished
 utterance, sounddevice for the microphone.
 
-Barge-in. With headphones (output device named headphones, AirPods, ...) the microphone stays open while a
-reply is spoken and sustained speech on top of it (a stricter threshold) stops the reply and becomes the next
-utterance. On speakers (the laptop's, or any unknown output) the microphone would hear Kokoro itself - measured:
-it barges in on its own reply within a second - so it is closed while a reply is spoken and the push-to-talk key
-(hold right Option, handled by speakd) is the barge-in. `barge_in=voice|key` in the mode file overrides the choice.
+Barge-in. The microphone stays open while a reply is spoken and sustained speech on top of it (a stricter
+threshold) stops the reply and becomes the next utterance. With headphones (output device named headphones,
+AirPods, ...) the microphone signal is used as is. On speakers (the laptop's, or any unknown output) it first goes
+through WebRTC's AEC3 echo canceller (aec.py) fed with everything mynah plays; without that Kokoro barges in on
+its own reply within a second (measured). `barge_in=voice|echo|key` in the mode file overrides the choice; `key`
+shuts the microphone during replies and leaves the push-to-talk key (hold right Option) as the only interruption.
 """
 import logging
 import os
@@ -27,6 +28,8 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+
+from .aec import EchoCanceller
 
 logger = logging.getLogger("mynah.listen")
 
@@ -141,7 +144,7 @@ class Endpointer:
             self.preroll.append(frame)
             if self.run >= need:
                 self.in_speech = True
-                self.frames = list(self.preroll)
+                self.frames = list(self.preroll)   # echo-cancelled already, so the pre-roll is clean
                 self.speech_frames = self.run
                 self.silence = 0
                 events.append(("start", speaking))
@@ -170,6 +173,14 @@ def is_headphones(device_name):
     """True for outputs that cannot feed back into the microphone. Anything unknown (the laptop's speakers,
     an external or Bluetooth speaker, a display) counts as speakers, the safe side: Kokoro would barge in on itself."""
     return bool(_HEADPHONES_RE.search(device_name or ""))
+
+
+def current_output_name():
+    import sounddevice as sd
+    try:
+        return sd.query_devices(sd.default.device[1])["name"]
+    except Exception:
+        return None
 
 
 def output_is_headphones():
@@ -216,7 +227,12 @@ class Listener(threading.Thread):
         self.barge_in = os.getenv("MYNAH_BARGE_IN")
         self.vad_state = None
         self.state = "off"
-        self.half_duplex = None       # decided per spoken reply, once the output device is known
+        self.half_duplex = None       # key barge-in: mic shut while a reply plays. Decided per reply
+        self.mode = None              # key | voice (headphones) | echo (speakers, echo-cancelled)
+        self.aec = EchoCanceller()
+        self.output_name = None
+        self.gate_mode = None
+        self.gate_until = 0.0
         self.idle_state = "listening"
         self.was_speaking = False
         self.mic_not_before = 0.0     # half-duplex: the mic stays shut a moment after a reply ends
@@ -235,7 +251,7 @@ class Listener(threading.Thread):
     # ---- microphone
     def _callback(self, indata, frames, time_info, status):
         try:
-            self.frames.put_nowait(indata[:, 0].copy())
+            self.frames.put_nowait((time.perf_counter(), indata[:, 0].copy()))
         except queue.Full:
             pass
 
@@ -387,13 +403,20 @@ class Listener(threading.Thread):
         return time.time() >= self.mic_not_before
 
     def decide_duplex(self):
-        override = self.barge_in
-        if override in ("voice", "key"):
-            self.half_duplex = override == "key"
+        if self.barge_in in ("key", "voice", "echo"):
+            self.mode = self.barge_in
         else:
-            self.half_duplex = not output_is_headphones()
-        logger.info("Reply speaking; " + ("microphone shut (speakers; hold right Option to interrupt)"
-                                          if self.half_duplex else "microphone stays open for barge-in"))
+            self.mode = "voice" if output_is_headphones() else "echo"
+        name = current_output_name()
+        if name != self.output_name:
+            self.aec.forget()      # other speakers or room path: relearn the echo
+            self.output_name = name
+        self.half_duplex = self.mode == "key"
+        self.gate_mode = self.mode   # outlives the reply: its tail is still gated
+        logger.info("Reply speaking; " + {
+            "key": "microphone shut (hold right Option to interrupt)",
+            "voice": "microphone open for barge-in (headphones)",
+            "echo": "microphone open for barge-in, echo cancelled"}[self.mode])
 
     def step(self):
         speaking = bool(self.speaker.speaking)
@@ -401,9 +424,10 @@ class Listener(threading.Thread):
             self.decide_duplex()   # only once the speaker has refreshed the device list and opened its output
         if not speaking:
             if self.was_speaking:
+                self.gate_until = time.time() + 0.5   # the room still rings: keep ignoring the reply's tail
                 self.mic_not_before = time.time() + (SPEAKER_TAIL_SECONDS if self.half_duplex else 0)
                 self.idle_state = "listening"
-            self.half_duplex = None
+            self.half_duplex = self.mode = None
         self.was_speaking = speaking
         if not self.mic_wanted(speaking):
             self.release_mic()
@@ -416,9 +440,14 @@ class Listener(threading.Thread):
                 return
             self.open_mic()
         try:
-            frame = self.frames.get(timeout=0.1)
+            item = self.frames.get(timeout=0.1)
         except queue.Empty:
             return
+        t, frame = item if isinstance(item, tuple) else (time.perf_counter(), item)
+        if self.gate_mode == "echo" and (speaking or time.time() < self.gate_until):
+            frame = self.aec.process(t, frame)   # the reply's own echo removed
+            if frame is None:
+                return
         prob = self.speech_probability(frame)
         for kind, payload in self.endpointer.push(frame, prob, speaking):
             if kind == "start":

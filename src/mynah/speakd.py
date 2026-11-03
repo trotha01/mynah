@@ -12,6 +12,7 @@ Inbox protocol (hooks/claude-speak writes it; a file appears atomically via rena
 Only the newest pending file counts: a newer one replaces older ones, and files older than
 STALE_SECONDS are discarded unread (so a restart never replays old replies).
 """
+import faulthandler
 import json
 import logging
 import os
@@ -65,6 +66,22 @@ def refresh_audio_devices():
         sd._initialize()
     except Exception as e:
         logger.warning(f"Could not refresh audio device list: {e}")
+
+
+def tapped_player_class():
+    """AudioPlayer that also hands every block it plays to the echo gate (listen.Listener.gate)."""
+    from mlx_audio.tts.audio_player import AudioPlayer
+
+    class TappedPlayer(AudioPlayer):
+        tap = None
+
+        def callback(self, outdata, frames, time_info, status):
+            try:
+                super().callback(outdata, frames, time_info, status)
+            finally:  # also when the last block ends the stream (CallbackStop)
+                if self.tap is not None:
+                    self.tap(outdata[:, 0])
+    return TappedPlayer
 
 
 class Speaker:
@@ -131,7 +148,10 @@ class Speaker:
             if self.listener is not None:
                 self.listener.release_mic()  # PortAudio cannot be re-initialised under an open input stream
             refresh_audio_devices()
-            player = AudioPlayer(sample_rate=self.model.sample_rate)
+            player = tapped_player_class()(sample_rate=self.model.sample_rate)
+            if self.listener is not None:
+                player.tap = self.listener.aec.tap
+                self.listener.aec.reset_reference()
             with self.lock:
                 if token != self.token:
                     self._close(player)
@@ -148,6 +168,7 @@ class Speaker:
                     player.queue_audio(result.audio)
                 if token == self.token:
                     player.wait_for_drain()
+                    time.sleep(0.15)  # the last callback is still returning; closing now races its CoreAudio stop (deadlock)
                     done = "Spoke" if token == self.token else "Interrupted"
                     logger.info(f"{done} {len(text)} chars (first audio queued after {first or 0:.2f}s)")
             except Exception as e:
@@ -245,6 +266,7 @@ def main():
     speaker = Speaker()
     speaker.warm_up()
     signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    faulthandler.register(signal.SIGUSR1, all_threads=True)  # kill -USR1 <pid>: every thread's stack goes to the log
     try:
         hold = HoldToTalk()
     except Exception as e:  # speaking must work without it

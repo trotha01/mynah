@@ -17,6 +17,8 @@ dependencies = [
     "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "pynput~=1.8.1",
     "rumps~=0.4.0",
+    # WebRTC audio processing (AEC3 echo canceller) for voice-conversation mode on laptop speakers
+    "livekit>=1.2",
     # macOS-only Cocoa bridge
     'pyobjc-framework-Cocoa~=11.1; platform_system == "Darwin"',
 ]

@@ -10,6 +10,7 @@ import numpy as np
 _tmp = tempfile.mkdtemp(prefix="mynah-test.")
 os.environ["MYNAH_VOICE_MODE_FILE"] = str(Path(_tmp) / "voice-conversation")
 os.environ["MYNAH_VOICE_STATE_FILE"] = str(Path(_tmp) / "voice-state")
+os.environ["MYNAH_VOICE_SETTINGS_FILE"] = str(Path(_tmp) / "voice-settings")
 
 from mynah import listen  # noqa: E402
 
@@ -82,6 +83,47 @@ class DeviceTest(unittest.TestCase):
             self.assertTrue(listen.is_headphones(name), name)
         for name in ["MacBook Air Speakers", "Studio Display Speakers", "JBL Flip 6", "", None]:
             self.assertFalse(listen.is_headphones(name), name)
+
+
+class VoiceFilterTest(unittest.TestCase):
+    """The speaker filter on its own with a fake encoder: embeddings are chosen, not computed."""
+    class Enc:
+        def __init__(self, vec): self.vec = vec
+    def make(self, own):
+        from mynah import speaker_id
+        v = speaker_id.SpeakerVerifier(profile=np.array([1.0, 0.0, 0.0]), encoder=object())
+        v.embed = lambda audio: np.array(own)
+        return v
+
+    def listener(self, own, on=True, enrolled=True):
+        sent = []
+        l = listen.Listener(FakeSpeaker(), submit=sent.append, vad=object(), stt=object())
+        l.speaker_check = on
+        l.verifier = self.make(own) if enrolled else __import__("mynah.speaker_id", fromlist=["x"]).SpeakerVerifier(profile=None, encoder=object())
+        l.transcribe = lambda audio: "list the todos"
+        listen.MODE_FILE.touch()
+        return l, sent
+
+    def test_other_voice_is_ignored(self):
+        l, sent = self.listener([0.2, 0.98, 0.0])
+        l.handle_utterance(np.full(16000, 0.05, dtype=np.float32))
+        self.assertEqual(sent, [])
+
+    def test_own_voice_passes(self):
+        l, sent = self.listener([0.95, 0.3, 0.0])
+        l.handle_utterance(np.full(16000, 0.05, dtype=np.float32))
+        self.assertEqual(sent, ["list the todos"])
+
+    def test_check_off_ignores_the_profile(self):
+        l, sent = self.listener([0.2, 0.98, 0.0], on=False)
+        l.handle_utterance(np.full(16000, 0.05, dtype=np.float32))
+        self.assertEqual(sent, ["list the todos"])
+
+    def test_not_enrolled_fails_open(self):
+        l, sent = self.listener([0.2, 0.98, 0.0], enrolled=False)
+        l.verifier.profile = None
+        l.handle_utterance(np.full(16000, 0.05, dtype=np.float32))
+        self.assertEqual(sent, ["list the todos"])
 
 
 class FakeSpeaker:

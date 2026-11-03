@@ -126,7 +126,10 @@ A hands-free loop with the `claude` in tmux session `left`: it replies, the repl
 notices when you stop talking, transcribes locally and submits the text with `jmacs ask`. All local: Silero VAD
 and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
 
-- **Toggle:** `hooks/voice-mode on|off|toggle|status`. The mode is the file `~/.config/jmacs/voice-conversation`
+- **Toggle:** `hooks/voice-mode on|off|toggle|enroll|status`. **Off stays off:** only Trevor turns it on; nothing in
+  this repo re-enables it (enroll and the tests leave it off), and from inside a Claude Code session `on` is refused
+  unless given `--yes` (= Trevor asked for it just now). Every on/off/refusal is logged with its caller in
+  `~/.local/state/mynah/voice-mode.log`. The mode is the file `~/.config/jmacs/voice-conversation`
   (present = on). It is announced aloud. **While it is off the microphone is not open at all** - speech is neither
   recorded nor acted on - and an utterance still being transcribed when you switch off is thrown away.
   Saying exactly "stop listening" / "voice mode off" also turns it off; nothing spoken can turn it on.
@@ -141,7 +144,13 @@ and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
   mic during replies and leaves holding right Option as the only interruption.
 - **Ignored:** blips, fillers ("mm-hmm", "uh"), and utterances quieter than -40 dBFS (people talking across the
   room measured -37 to -60 dBFS; speaking at the laptop measured -19 to -35). Everything heard and sent is in the log.
-- **Settings:** optional `name=value` lines in the mode file, read each time it is switched on:
+- **Only your voice (optional):** `hooks/voice-mode enroll` (about a minute: read six sentences after the tone;
+  pauses the mode meanwhile) stores your voiceprint; add `speaker=on` to `~/.config/jmacs/voice-settings` and utterances that do not
+  match it are logged ("Voice match 0.31: someone else, ignored") and never sent. Uses SpeechBrain's ECAPA-TDNN
+  (`src/mynah/speaker_id.py`); `speaker_threshold=0.5` tunes it. With macOS voices the same voice scored
+  0.67-0.88, other voices 0.01-0.44. Short utterances score noisier; a recording of you would pass; interrupting a
+  reply is not voice-checked, only what is then sent.
+- **Settings:** optional `name=value` lines in `~/.config/jmacs/voice-settings` (not the mode file: switching off deletes that), read each time it is switched on:
   `min_level_db=-35`, `silence=1.2`, `barge_in=voice|key`.
 - **Permission:** macOS asks for microphone access for "Mynah Speaker" the first time the mode is switched on
   (`hooks/build-speaker-app` adds the usage text; rebuild it after pulling).

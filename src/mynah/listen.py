@@ -37,6 +37,7 @@ SAMPLE_RATE = 16000
 FRAME = 512                                  # Silero's window: 32 ms at 16 kHz
 FRAME_SECONDS = FRAME / SAMPLE_RATE
 
+SETTINGS_FILE = Path(os.getenv("MYNAH_VOICE_SETTINGS_FILE", str(Path.home() / ".config/jmacs/voice-settings")))
 MODE_FILE = Path(os.getenv("MYNAH_VOICE_MODE_FILE", str(Path.home() / ".config/jmacs/voice-conversation")))
 STATE_FILE = Path(os.getenv("MYNAH_VOICE_STATE_FILE", str(Path.home() / ".local/state/mynah/voice-state")))
 JMACS = os.getenv("MYNAH_JMACS", str(Path.home() / ".local/bin/jmacs"))
@@ -51,6 +52,7 @@ START_SECONDS = 0.1                          # sustained speech that opens an ut
 PREROLL_SECONDS = 0.35                       # audio kept from before the VAD noticed the speech
 MAX_UTTERANCE_SECONDS = 90.0
 SPEAKER_TAIL_SECONDS = 0.5                   # half-duplex: keep the mic shut while the room still rings
+SPEAKER_THRESHOLD = 0.5   # cosine similarity to Trevor's voiceprint (speaker_id.py)
 CUES = os.getenv("MYNAH_CUES", "1") != "0"
 # Utterances quieter than this (dBFS, RMS of the speech) are far-away voices, a TV, the next room: ignored.
 MIN_LEVEL_DB = float(os.getenv("MYNAH_MIN_LEVEL_DB", "-40"))
@@ -65,16 +67,18 @@ def mode_on():
 
 
 def mode_settings():
-    """Optional `name=value` lines in the mode file (read each time the mode is switched on):
-    min_level_db=-35, silence=1.2, barge_in=voice|key. The file is normally empty (defaults)."""
+    """Optional `name=value` lines in ~/.config/jmacs/voice-settings (read each time the mode is switched on):
+    min_level_db=-35, silence=1.2, barge_in=voice|echo|key, speaker=on, speaker_threshold=0.5.
+    A separate file, because switching the mode off deletes the mode file."""
     out = {}
-    try:
-        for line in MODE_FILE.read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                out[k.strip()] = v.strip()
-    except OSError:
-        pass
+    for path in (MODE_FILE, SETTINGS_FILE):   # the mode file's own lines still work (older setups)
+        try:
+            for line in path.read_text().splitlines():
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+        except OSError:
+            pass
     return out
 
 
@@ -224,6 +228,9 @@ class Listener(threading.Thread):
         self.frames = queue.Queue(maxsize=400)
         self.endpointer = Endpointer()
         self.min_level_db = MIN_LEVEL_DB
+        self.speaker_check = False
+        self.speaker_threshold = SPEAKER_THRESHOLD
+        self.verifier = None
         self.barge_in = os.getenv("MYNAH_BARGE_IN")
         self.vad_state = None
         self.state = "off"
@@ -235,6 +242,7 @@ class Listener(threading.Thread):
         self.gate_until = 0.0
         self.idle_state = "listening"
         self.was_speaking = False
+        self.deaf_until = 0.0
         self.mic_not_before = 0.0     # half-duplex: the mic stays shut a moment after a reply ends
         self.active = time.time()     # last moment the mode was on; speakd uses it to stay alive
 
@@ -298,6 +306,12 @@ class Listener(threading.Thread):
             from mlx_audio.stt.utils import load_model as load_stt
             self.stt = load_stt(STT_MODEL)
             self.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm up
+        if self.speaker_check and self.verifier is None:
+            from .speaker_id import SpeakerVerifier
+            self.verifier = SpeakerVerifier()
+            if self.verifier.enrolled:
+                self.verifier._load()
+                self.verifier.embed(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm up
         logger.info("Voice models ready")
 
     def speech_probability(self, frame):
@@ -318,9 +332,25 @@ class Listener(threading.Thread):
         if level < self.min_level_db:
             logger.info(f"Heard {len(audio) / SAMPLE_RATE:.1f}s at {level:.0f} dBFS: too quiet (below {self.min_level_db:.0f}), ignored")
             return
+        if self.speaker_check and not self.is_trevor(audio):
+            return
         text = self.transcribe(audio)
         logger.info(f"Heard {len(audio) / SAMPLE_RATE:.1f}s at {level:.0f} dBFS, transcribed in {time.time() - t:.2f}s: {text!r}")
         self.deliver(text)
+
+    def is_trevor(self, audio):
+        """With speaker=on: does this sound like the enrolled voice? Fails open (with a log line) when no one is enrolled."""
+        if self.verifier is None:
+            from .speaker_id import SpeakerVerifier
+            self.verifier = SpeakerVerifier()
+        if not self.verifier.enrolled:
+            logger.warning("speaker=on but no voice profile: run hooks/voice-mode enroll. Not filtering by voice.")
+            return True
+        score = self.verifier.score(audio)
+        ok = score >= self.speaker_threshold
+        logger.info(f"Voice match {score:.2f} (threshold {self.speaker_threshold:.2f}): "
+                    + ("Trevor" if ok else "someone else, ignored"))
+        return ok
 
     def deliver(self, text):
         """Act on a transcript - only if the mode is still on (it may have been switched off meanwhile)."""
@@ -370,6 +400,8 @@ class Listener(threading.Thread):
 
     def apply_settings(self):
         cfg = mode_settings()
+        self.speaker_check = cfg.get("speaker", "off").lower() in ("on", "true", "1", "yes")
+        self.speaker_threshold = float(cfg.get("speaker_threshold", SPEAKER_THRESHOLD))
         try:
             self.min_level_db = float(cfg.get("min_level_db", MIN_LEVEL_DB))
             self.endpointer = Endpointer(silence_seconds=float(cfg.get("silence", SILENCE_SECONDS)))
@@ -386,6 +418,7 @@ class Listener(threading.Thread):
         self.set_state("loading")
         self.load_models()
         self.speaker.say("Voice mode on.")
+        self.deaf_until = time.time() + 3.0   # its own announcement: the canceller has not learned the room yet
         self.idle_state = "listening"
         self.set_state("listening")
 
@@ -444,6 +477,8 @@ class Listener(threading.Thread):
         except queue.Empty:
             return
         t, frame = item if isinstance(item, tuple) else (time.perf_counter(), item)
+        if time.time() < self.deaf_until:
+            return
         if self.gate_mode == "echo" and (speaking or time.time() < self.gate_until):
             frame = self.aec.process(t, frame)   # the reply's own echo removed
             if frame is None:

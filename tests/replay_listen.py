@@ -19,9 +19,9 @@ os.environ["MYNAH_CUES"] = "0"
 from mynah import listen  # noqa: E402
 
 
-def speech(text):
+def speech(text, voice="Samantha"):
     aiff, wav = tmp / "s.aiff", tmp / "s.wav"
-    subprocess.run(["say", "-o", str(aiff), text], check=True)
+    subprocess.run(["say", "-v", voice, "-o", str(aiff), text], check=True)
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(aiff), "-ar", "16000", "-ac", "1",
                     "-c:a", "pcm_s16le", str(wav)], check=True)
     w = wave.open(str(wav))
@@ -64,13 +64,15 @@ class ReplayListener(listen.Listener):
         self.stream = None
 
 
-def scenario(name, audio, mode, expect):
+def scenario(name, audio, mode, expect, verifier=None):
     sent = []
     listen.MODE_FILE.unlink(missing_ok=True)
     if mode:
         listen.MODE_FILE.touch()
     l = ReplayListener(Speaker(), submit=sent.append, vad=VAD, stt=STT)
     l.audio = audio
+    if verifier is not None:
+        l.speaker_check, l.verifier = True, verifier
     l.idle_state = "listening"
     deadline = time.time() + len(audio) / 16000 / 8 + 6
     def loop():
@@ -80,7 +82,9 @@ def scenario(name, audio, mode, expect):
             else:
                 time.sleep(0.05)   # mode off: the real run() never calls step(), i.e. never opens the mic
     loop()
-    ok = [s.lower().strip(" .?!") for s in sent] == [e.lower() for e in expect]
+    import difflib  # the recogniser may spell "to do" as "toto": compare loosely
+    got = [s.lower().strip(" .?!") for s in sent]
+    ok = len(got) == len(expect) and all(difflib.SequenceMatcher(None, g, e.lower()).ratio() > 0.9 for g, e in zip(got, expect))
     print(("PASS" if ok else "FAIL"), name, sent)
     return ok
 
@@ -101,5 +105,18 @@ results = [
              ["yes, go ahead and merge it".strip(), "yes, go ahead and merge it"]),
     scenario("only silence/noise", silence(5), True, []),
     scenario("mode off ignores speech", np.concatenate([silence(1), a, silence(2)]), False, []),
+]
+
+# speaker=on: enrol Samantha, then Samantha is heard and Daniel / Karen (a similar voice) are ignored
+os.environ["MYNAH_VOICE_PROFILE"] = str(tmp / "profile.npz")
+from mynah import speaker_id  # noqa: E402
+speaker_id.PROFILE = tmp / "profile.npz"
+V = speaker_id.SpeakerVerifier()
+V.enroll([speech(t) for t in speaker_id.ENROLL_SENTENCES[:4]])
+sentence = "Open the notes from yesterday and tell me what changed."
+results += [
+    scenario("speaker filter: enrolled voice", np.concatenate([silence(1), speech(sentence), silence(2)]), True, ["open the notes from yesterday and tell me what changed"], V),
+    scenario("speaker filter: other voice (Daniel)", np.concatenate([silence(1), speech(sentence, "Daniel"), silence(2)]), True, [], V),
+    scenario("speaker filter: similar voice (Karen)", np.concatenate([silence(1), speech(sentence, "Karen"), silence(2)]), True, [], V),
 ]
 sys.exit(0 if all(results) else 1)

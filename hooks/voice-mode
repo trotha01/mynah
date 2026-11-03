@@ -3,24 +3,47 @@
 #   voice-mode on      start the speaker if needed, switch the mode on (it announces "Voice mode on")
 #   voice-mode off     switch the mode off: the microphone closes, speech stops, nothing is acted on
 #   voice-mode toggle
+#   voice-mode enroll  record your voice (6 sentences, ~1 min) for `speaker=on`; leaves the mode off afterwards
 #   voice-mode status  on/off and what the listener is doing (listening, hearing, transcribing, waiting, speaking)
 # The mode is the file ~/.config/jmacs/voice-conversation: present = on. While it is absent the microphone is
 # not open at all. Tests: MYNAH_VOICE_MODE_FILE / MYNAH_VOICE_STATE_FILE / MYNAH_INBOX / JMACS_LEFT redirect it.
+# THE RULE: only Trevor turns voice mode on, and off stays off. Nothing in this repo re-enables it (enroll and
+# the tests leave it off); every on/off is logged with its caller in ~/.local/state/mynah/voice-mode.log.
+# From inside a Claude Code session `on` needs --yes, which means "Trevor asked for it in this very message".
 flag=${MYNAH_VOICE_MODE_FILE:-$HOME/.config/jmacs/voice-conversation}
 state=${MYNAH_VOICE_STATE_FILE:-$HOME/.local/state/mynah/voice-state}
 here=${0:A:h}
 cmd=${1:-toggle}
+yes=0; [[ $2 == --yes || $1 == --yes ]] && { yes=1; [[ $1 == --yes ]] && cmd=${2:-toggle} }
+logf=${MYNAH_VOICE_MODE_LOG:-$HOME/.local/state/mynah/voice-mode.log}
+mkdir -p $logf:h
+who="session=${CLAUDE_CODE_SESSION_ID:-none} claudecode=${CLAUDECODE:-0} ppid=$PPID($(ps -o comm= -p $PPID 2>/dev/null)) cwd=$PWD"
+log() { print -r -- "$(date '+%F %T') $1 $who" >> $logf }
 [[ $cmd == toggle ]] && { [[ -f $flag ]] && cmd=off || cmd=on }
 case $cmd in
   on)
+    if [[ -z $MYNAH_VOICE_MODE_FILE && ( -n $CLAUDECODE || -n $CLAUDE_CODE_SESSION_ID ) && $yes -eq 0 ]]; then
+      log "REFUSED on"
+      echo "refused: voice mode is only turned on when Trevor asks for it. If he just did, run: voice-mode on --yes" >&2
+      exit 3
+    fi
+    log "on"
     mkdir -p $flag:h
     $here/claude-speak Start   # the speaker (and the listener inside it) must be running to see the file
     touch $flag
     echo "voice mode on" ;;
   off)
+    log "off"
     rm -f $flag
     echo "voice mode off" ;;
+  enroll)
+    log "enroll (leaves the mode off)"
+    rm -f $flag; sleep 1   # the listener must not hear (and submit) the enrolment sentences
+    PATH=/opt/homebrew/bin:$PATH ${MYNAH_PYTHON:-$HOME/.local/share/uv/tools/mynah/bin/python} -m mynah.speaker_id enroll
+    rc=$?
+    echo "voice mode is off; turn it on with: voice-mode on"
+    exit $rc ;;
   status)
     if [[ -f $flag ]]; then echo "on ($(<$state 2>/dev/null || echo starting))"; else echo off; fi ;;
-  *) echo "usage: voice-mode on|off|toggle|status" >&2; exit 2 ;;
+  *) echo "usage: voice-mode on|off|toggle|enroll|status" >&2; exit 2 ;;
 esac

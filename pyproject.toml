@@ -19,6 +19,8 @@ dependencies = [
     "rumps~=0.4.0",
     # WebRTC audio processing (AEC3 echo canceller) for voice-conversation mode on laptop speakers
     "livekit>=1.2",
+    # speaker verification (voice-conversation mode, speaker=on)
+    "speechbrain>=1.1",
     # macOS-only Cocoa bridge
     'pyobjc-framework-Cocoa~=11.1; platform_system == "Darwin"',
 ]

@@ -1,0 +1,14 @@
+#!/bin/zsh
+# Builds "Mynah Speaker.app" from speaker.applescript (see there for why). Run it once, and again after editing
+# the script: hooks/build-speaker-app [app-path]. Without the app, hooks/claude-speak still speaks replies, but
+# starts the speaker in the Background session, where hold-to-talk cannot see the key.
+app=${1:-$HOME/.local/share/mynah/Mynah Speaker.app}
+mkdir -p $app:h
+rm -rf $app
+osacompile -o $app ${0:A:h}/speaker.applescript || exit 1
+defaults write $app/Contents/Info LSUIElement -bool true  # no Dock icon while it starts the speaker
+# Voice-conversation mode (hooks/voice-mode) opens the microphone from the speaker this app starts; macOS asks
+# for permission on first use and only does so for an app that states why.
+defaults write $app/Contents/Info NSMicrophoneUsageDescription -string "Mynah listens for your voice while voice-conversation mode is on."
+codesign --force --deep -s - $app 2>/dev/null || exit 1   # editing Info.plist invalidated the signature
+print -r -- $app

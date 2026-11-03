@@ -1,0 +1,46 @@
+#!/bin/zsh
+# Claude Code hook for mynah's resident speaker (src/mynah/speakd.py).
+#   claude-speak Stop              speak the reply that just finished (starts the speaker if it is not running)
+#   claude-speak UserPromptSubmit  stop speaking (a new prompt cuts the old reply off)
+#   claude-speak Start             just make sure the speaker is running (hooks/voice-mode uses it)
+# Speaks only for the Jmacs orchestrator: the claude running in the tmux session $JMACS_LEFT (default
+# "left"). Workers and other Claude sessions stay silent. Replies are spoken while either flag file exists:
+# ~/.config/jmacs/voice-replies (replies only; rm it to mute) or ~/.config/jmacs/voice-conversation (voice
+# conversation mode, which also listens: hooks/voice-mode on|off). Never fails: a hook error must not disturb Claude.
+event=$1
+inbox=${MYNAH_INBOX:-$HOME/.local/state/mynah/inbox}
+if [[ $event != Start ]]; then
+  [[ ( -f ~/.config/jmacs/voice-replies || -f ~/.config/jmacs/voice-conversation ) && -n $TMUX_PANE ]] || exit 0
+  tmux list-panes -t "=${JMACS_LEFT:-left}:" -F '#{pane_id}' 2>/dev/null | grep -qxF "$TMUX_PANE" || exit 0
+fi
+mkdir -p $inbox
+zmodload zsh/datetime
+name=$(printf '%015.3f.%d' $EPOCHREALTIME $$)  # fixed width, so file names sort in time order
+case $event in
+  Stop|Start)
+    if [[ $event == Stop ]]; then
+      input=$(cat)
+      msg=$(print -r -- $input | jq -r '.last_assistant_message // empty' 2>/dev/null)
+      [[ -n $msg ]] || exit 0
+      print -r -- $msg > $inbox/.$name.tmp && mv $inbox/.$name.tmp $inbox/$name.say
+    fi
+    # Start the speaker when it is not running (first reply after a login, or after its idle exit). The
+    # reply waits in the inbox through the ~3 s warm-up. Subshell + redirects so the hook does not wait for it.
+    # Through the app (hooks/build-speaker-app) it runs in the desktop session, where hold-to-talk can see the
+    # key; a hook's own children belong to the tmux server's Background session. Tests with their own inbox
+    # (MYNAH_INBOX) and a machine without the app start it directly.
+    pidfile=$inbox:h/speakd.pid
+    speaker_app=${MYNAH_SPEAKER_APP:-$HOME/.local/share/mynah/Mynah Speaker.app}
+    if ! { [[ -r $pidfile ]] && kill -0 $(<$pidfile) 2>/dev/null }; then
+      if [[ -d $speaker_app && -z $MYNAH_INBOX ]]; then
+        open -g $speaker_app
+      else
+        ( cd /tmp && HF_HUB_OFFLINE=1 PATH=/opt/homebrew/bin:$PATH MYNAH_INBOX=$inbox \
+            nohup ${MYNAH_PYTHON:-$HOME/.local/share/uv/tools/mynah/bin/python} -m mynah.speakd \
+            >>$HOME/Library/Logs/mynah-speakd.log 2>&1 </dev/null & )
+      fi
+    fi ;;
+  UserPromptSubmit)
+    : > $inbox/$name.stop ;;
+esac
+exit 0

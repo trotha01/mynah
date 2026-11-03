@@ -1,0 +1,26 @@
+#!/bin/zsh
+# Voice-conversation mode with the Jmacs orchestrator (see ../docs/voice-conversation-plan.md).
+#   voice-mode on      start the speaker if needed, switch the mode on (it announces "Voice mode on")
+#   voice-mode off     switch the mode off: the microphone closes, speech stops, nothing is acted on
+#   voice-mode toggle
+#   voice-mode status  on/off and what the listener is doing (listening, hearing, transcribing, waiting, speaking)
+# The mode is the file ~/.config/jmacs/voice-conversation: present = on. While it is absent the microphone is
+# not open at all. Tests: MYNAH_VOICE_MODE_FILE / MYNAH_VOICE_STATE_FILE / MYNAH_INBOX / JMACS_LEFT redirect it.
+flag=${MYNAH_VOICE_MODE_FILE:-$HOME/.config/jmacs/voice-conversation}
+state=${MYNAH_VOICE_STATE_FILE:-$HOME/.local/state/mynah/voice-state}
+here=${0:A:h}
+cmd=${1:-toggle}
+[[ $cmd == toggle ]] && { [[ -f $flag ]] && cmd=off || cmd=on }
+case $cmd in
+  on)
+    mkdir -p $flag:h
+    $here/claude-speak Start   # the speaker (and the listener inside it) must be running to see the file
+    touch $flag
+    echo "voice mode on" ;;
+  off)
+    rm -f $flag
+    echo "voice mode off" ;;
+  status)
+    if [[ -f $flag ]]; then echo "on ($(<$state 2>/dev/null || echo starting))"; else echo off; fi ;;
+  *) echo "usage: voice-mode on|off|toggle|status" >&2; exit 2 ;;
+esac

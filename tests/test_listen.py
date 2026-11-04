@@ -85,6 +85,18 @@ class DeviceTest(unittest.TestCase):
             self.assertFalse(listen.is_headphones(name), name)
 
 
+class AlexaFilterTest(unittest.TestCase):
+    def test_dropped(self):
+        for t in ["Alexa, play coffee jazz", "Hey Alexa what time is it", "Echo, turn it up", "Luxa, can you play coffee jazz?",
+                  "Alexis, stop", "Lexa set a timer", "A Lexa, lights off", "Okay Alexa.", "alexa"]:
+            self.assertTrue(listen.addressed_to_alexa(t), t)
+
+    def test_kept(self):
+        for t in ["List the todos", "Can you ask Alexa about it", "What did Alexander say", "Check the echo cancellation",
+                  "Yes go ahead", "Please open the notes", "Elixir build failed"]:
+            self.assertFalse(listen.addressed_to_alexa(t), t)
+
+
 class VoiceFilterTest(unittest.TestCase):
     """The speaker filter on its own with a fake encoder: embeddings are chosen, not computed."""
     class Enc:
@@ -152,6 +164,19 @@ class DeliverTest(unittest.TestCase):
         self.l.deliver("delete everything")
         self.l.deliver("stop listening")
         self.assertEqual(self.sent, [])
+
+    def test_muted_hears_nothing_but_mode_stays_on(self):
+        listen.MODE_FILE.touch()
+        self.addCleanup(listen.MODE_FILE.unlink, missing_ok=True)
+        self.l.set_muted(True)
+        self.assertFalse(self.l.mic_wanted(False))
+        self.l.deliver("list the todos")
+        self.assertEqual(self.sent, [])
+        self.assertTrue(listen.mode_on())
+        self.l.set_muted(False)
+        self.assertTrue(self.l.mic_wanted(False))
+        self.l.deliver("list the todos")
+        self.assertEqual(self.sent, ["list the todos"])
 
     def test_mode_on_submits(self):
         listen.MODE_FILE.touch()

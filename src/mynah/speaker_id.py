@@ -44,8 +44,11 @@ class SpeakerVerifier:
     def __init__(self, profile=None, encoder=None):
         self.encoder = encoder
         self.profile = profile
+        self.embeddings = np.zeros((0, 192))
         if profile is None and PROFILE.exists():
-            self.profile = np.load(PROFILE)["profile"]
+            d = np.load(PROFILE)
+            self.profile = d["profile"]
+            self.embeddings = d["embeddings"]
 
     @property
     def enrolled(self):
@@ -69,10 +72,23 @@ class SpeakerVerifier:
 
     def score(self, audio):
         """Cosine similarity of this clip to the enrolled voice (-1..1; same speaker is typically above 0.5)."""
-        return cosine(self.embed(audio), self.profile)
+        return self.match(self.embed(audio))
 
-    def enroll(self, clips):
+    def match(self, e):
+        """Best of: similarity to the mean profile, or the mean of the two closest enrolled recordings. Enrolments
+        made in different conditions (close mic, relaxed talk) are all kept, so any of them can vouch for a clip."""
+        best = cosine(e, self.profile)
+        if len(self.embeddings) >= 2:
+            top = sorted((cosine(e, x) for x in self.embeddings), reverse=True)[:2]
+            best = max(best, sum(top) / 2)
+        return best
+
+    def enroll(self, clips, add=False):
+        """Store the clips' voiceprints. add=True keeps the earlier recordings and matches against all of them."""
         embs = [self.embed(c) for c in clips]
+        if add:
+            embs = list(self.embeddings) + embs
+        self.embeddings = np.array(embs)
         profile = np.mean(embs, axis=0)
         profile /= np.linalg.norm(profile)
         PROFILE.parent.mkdir(parents=True, exist_ok=True)
@@ -92,12 +108,16 @@ def record(seconds):
     return rec[:, 0]
 
 
-def enroll_main():
+def enroll_main(add=False, extra_wavs=()):
     """`python -m mynah.speaker_id enroll`: read the sentences aloud, one after another (no keyboard needed)."""
     v = SpeakerVerifier()
     print("Loading the voice model (first time: ~90 MB download)...", flush=True)
     v._load()
     clips = []
+    for w in extra_wavs:
+        import wave
+        with wave.open(str(w)) as f:
+            clips.append(np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768)
     print("\nRead each sentence aloud at your normal speaking volume, as you will talk to the orchestrator.\n")
     for i, s in enumerate(ENROLL_SENTENCES, 1):
         print(f"[{i}/{len(ENROLL_SENTENCES)}] Read this after the tone:\n    \"{s}\"", flush=True)
@@ -108,14 +128,17 @@ def enroll_main():
         print(f"    recorded, level {lvl:.0f} dBFS" + ("  (too quiet, skipped)" if lvl < -50 else ""))
         if lvl >= -50:
             clips.append(a)
-    if len(clips) < 4:
+    if len(clips) < 4 and not (add and len(clips) >= 1):
         print("Fewer than 4 usable recordings: nothing saved. Is the microphone working?")
         return 1
-    scores = v.enroll(clips)
+    scores = v.enroll(clips, add=add)
     print(f"\nSaved {PROFILE}. Each recording's similarity to your profile: {[round(x, 2) for x in scores]}")
     print("(consistent recordings score above ~0.7; add `speaker=on` to ~/.config/jmacs/voice-conversation to use it)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(enroll_main() if sys.argv[1:2] == ["enroll"] else 2)
+    a = sys.argv[1:]
+    # `enroll --add [file.wav ...]`: keep the existing recordings and add new ones (plus any listed wav files)
+    sys.exit(enroll_main(add="--add" in a, extra_wavs=[x for x in a[1:] if x.endswith(".wav")])
+             if a[:1] == ["enroll"] else 2)

@@ -75,18 +75,40 @@ _level_at = 0.0
 
 def write_level(block):
     """Publish the RMS of the block being played (for the Jmacs companion's mouth; companion/companion.lisp
-    reads it). At most every 30 ms; the file is "<rms> <unix time>"; a missing or old one means silence. Never raises."""
-    global _level_at
+    reads it). Called from the audio callback, which must stay light (file I/O there starves the mic thread and
+    once deadlocked CoreAudio), so only the number is stored here; a thread writes the file. Never raises."""
+    global _level_at, _level_rms
     now = time.monotonic()
     if now - _level_at < 0.03:
         return
     _level_at = now
     try:
-        LEVEL_FILE.parent.mkdir(parents=True, exist_ok=True)
-        rms = float((block.astype("float32") ** 2).mean() ** 0.5)
-        LEVEL_FILE.write_text(f"{rms:.4f} {time.time():.3f}\n")
+        _level_rms = float((block.astype("float32") ** 2).mean() ** 0.5)
+        _start_level_writer()
     except Exception:
         pass
+
+
+_level_rms = 0.0
+_level_thread = None
+
+
+def _start_level_writer():
+    global _level_thread
+    if _level_thread is not None:
+        return
+    def run():
+        while True:
+            time.sleep(0.03)
+            if time.monotonic() - _level_at > 0.1:
+                continue   # nothing playing: leave the file old, which the companion reads as silence
+            try:
+                LEVEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LEVEL_FILE.write_text(f"{_level_rms:.4f} {time.time():.3f}\n")
+            except Exception:
+                pass
+    _level_thread = threading.Thread(target=run, daemon=True, name="level-writer")
+    _level_thread.start()
 
 
 SAY_KIND_FILE = Path(os.getenv("MYNAH_SAY_KIND_FILE", str(Path.home() / ".local/state/mynah/voice-say-kind")))
@@ -329,8 +351,25 @@ def drain_inbox(speaker, quiet=False):
         speaker.say(spoken)
 
 
+TAP_SECONDS = 0.5   # a press shorter than this is a tap (mute toggle); longer is hold-to-talk
+
+
+def wire_model_memory():
+    """Keep the models' GPU buffers resident. With ~16 GB shared by many Claude sessions and browsers macOS swapped
+    the idle weights out and the next transcription took 15-30 s to read them back (measured 2026-11-04); a
+    keep-warm loop alone was not enough. MLX can wire its buffers (residency set) up to a limit; MYNAH_WIRED_GB."""
+    try:
+        import mlx.core as mx
+        gb = float(os.getenv("MYNAH_WIRED_GB", "4"))
+        old = mx.set_wired_limit(int(gb * 2**30))
+        logger.info(f"MLX wired memory limit {gb:.1f} GB (was {old / 2**30:.1f} GB)")
+    except Exception as e:
+        logger.warning(f"Could not set the MLX wired limit: {e}")
+
+
 def main():
     INBOX.mkdir(parents=True, exist_ok=True)
+    wire_model_memory()
     # The hook starts this process when it is not running and drops the reply that triggered the start in
     # the inbox, so files that are still fresh must survive the warm-up; stale ones are dropped unread.
     try:  # two hooks firing together may both start one: the later one backs off
@@ -355,6 +394,7 @@ def main():
     logger.info(f"Ready; watching {INBOX}")
     last_activity = time.time()
     was_held = False
+    spoke, press_at = False, 0.0
     while True:
         if mode_on() or any(p.suffix in (".say", ".stop") for p in INBOX.glob("*")):
             last_activity = time.time()
@@ -365,8 +405,12 @@ def main():
         try:  # one bad iteration must not end the process: the hook only restarts it at the next reply
             held = hold is not None and hold.held()
             if held and not was_held:
+                press_at = time.time()
+                spoke = bool(speaker.speaking)
                 speaker.stop()
                 logger.info("Push-to-talk key down: stopped speaking")
+            if was_held and not held and not spoke and time.time() - press_at < TAP_SECONDS and mode_on():
+                listener.set_muted(not listener.muted)   # a short tap with nothing playing: mute / unmute
             was_held = held
             drain_inbox(speaker, quiet=held)
         except Exception as e:

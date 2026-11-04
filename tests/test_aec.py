@@ -20,7 +20,7 @@ def db(a):
 class EchoCancellerTest(unittest.TestCase):
     def run_room(self, voice):
         d = Path(tempfile.mkdtemp())
-        subprocess.run(["say", "-o", str(d / "r.aiff"), TEXT], check=True)
+        subprocess.run(["say", "-v", "Samantha", "-o", str(d / "r.aiff"), TEXT], check=True)
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(d / "r.aiff"), "-ar", "16000", "-ac", "1",
                         "-c:a", "pcm_s16le", str(d / "r.wav")], check=True)
         w = wave.open(str(d / "r.wav"))

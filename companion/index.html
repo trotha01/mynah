@@ -10,9 +10,12 @@ body{background:#f4efe6;color:#3a2f2a;font:13px -apple-system,system-ui,sans-ser
 #note{position:fixed;top:14px;left:50%;transform:translateX(-50%) translateY(-8px);max-width:86vw;padding:8px 14px;border-radius:999px;background:#fff;color:#1b2b2a;box-shadow:0 2px 10px #0003;font-size:14px;font-weight:600;opacity:0;transition:opacity .3s,transform .3s;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #note.show{opacity:1;transform:translateX(-50%)}
 #note i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px;background:var(--dot)}
+#badge{position:fixed;top:8px;left:8px;padding:5px 11px;border-radius:14px;font:600 13px system-ui,sans-serif;color:#fff;background:#2e8b57;z-index:9}
+#badge[data-k=speaking]{background:#2f6fb5}#badge[data-k=off]{background:#6b6b6b}#badge[data-k=muted]{background:#d32f2f;font-size:15px}
+body.muted::after{content:"";position:fixed;inset:0;border:6px solid #d32f2f;pointer-events:none;z-index:8}
 </style></head><body>
 <div id="stage"></div>
-<div id="note"><i></i><span></span></div>
+<div id="badge" data-k="off"></div><div id="note"><i></i><span></span></div>
 <div id="label"></div>
 <script src="/engine.js"></script><script src="/looks.js"></script><script src="/anime.js"></script>
 <script>
@@ -24,10 +27,10 @@ const look=LOOKS[qs.get('look')]||LOOKS[DEFAULT_LOOK];
 document.body.style.background=look.card.bg;document.body.style.color=look.card.fg;
 const c=new Companion(document.getElementById('stage'),look);
 const label=document.getElementById('label');
-const LABEL={off:'asleep (voice mode off)',loading:'waking up…',listening:'listening',hearing:'hearing you',transcribing:'thinking…',waiting:'thinking…',speaking:'',barge:'oh!'};
+const LABEL={off:'asleep (voice mode off)',loading:'waking up…',listening:'listening',hearing:'hearing you',transcribing:'thinking…',waiting:'thinking…',speaking:'',barge:'oh!',muted:'muted (tap right Option)'};
 const IN={state:'off',level:0,q:false,noteKind:'',noteUntil:0,bargeUntil:0,vis:null,lipLag:+(qs.get('lag')||0)};   // ?lag=ms delays the mouth (negative = earlier)
 let target=0,lastOk=0,noteN=-1;
-function setState(s){IN.state=s}   // the engine debounces blips and detects barge-in (speaking -> hearing that sticks) itself
+function setState(s){IN.state=s==='muted'?'listening':s.replace('-muted','')}   // the engine debounces blips and detects barge-in (speaking -> hearing that sticks) itself
 const KCOL={waiting:'#6ee7a0',needs_you:'#ffb347',done:'#7fc8c4',blocked:'#ff6b6b'};
 function showNote(n){   // a worker session changed status (the server also speaks it when voice mode is on)
   if(!n)return;
@@ -37,11 +40,21 @@ function showNote(n){   // a worker session changed status (the server also spea
   const el=document.getElementById('note');el.querySelector('span').textContent=n.text;el.style.setProperty('--dot',KCOL[n.kind]||'#999');el.classList.add('show');
   clearTimeout(showNote.t);showNote.t=setTimeout(()=>el.classList.remove('show'),9000);
 }
+/* Always-visible mic badge, straight from speakd's real state (voice-state file via /api/s): MUTED (red, with a red
+   frame round the page) when the right-Option tap muted listening, else SPEAKING / LISTENING / OFF. */
+const bd=document.getElementById('badge');
+function badge(s){
+  const muted=s==='muted'||s.endsWith('-muted');
+  const kind=s==='off'?'off':muted?'muted':(s.startsWith('speaking')?'speaking':'listening');
+  const txt={off:'VOICE OFF',muted:'MUTED - not listening',speaking:'SPEAKING',listening:'LISTENING'}[kind];
+  const ic={off:'\u{1F634}',muted:'\u{1F507}',speaking:'\u{1F50A}',listening:'\u{1F3A4}'}[kind];
+  if(bd.dataset.k!==kind){bd.dataset.k=kind;bd.textContent=ic+' '+txt;document.body.classList.toggle('muted',kind==='muted')}
+}
 async function poll(){
   try{
     const r=await fetch('/api/s',{cache:'no-store'});const j=await r.json();
-    lastOk=performance.now();target=Math.min(1,j.level*5);IN.q=!!j.q;IN.vis=j.vis;setState(j.state);showNote(j.note);
-  }catch(e){ if(performance.now()-lastOk>4000){target=0;setState('off');} }
+    lastOk=performance.now();target=Math.min(1,j.level*5);IN.q=!!j.q;IN.vis=j.vis;setState(j.state);badge(j.state);showNote(j.note);
+  }catch(e){ if(performance.now()-lastOk>4000){target=0;setState('off');badge('off');} }
 }
 setInterval(poll,50);
 let level=0;

@@ -45,6 +45,7 @@ VAD_MODEL = os.getenv("MYNAH_VAD_MODEL", "mlx-community/silero-vad")
 STT_MODEL = os.getenv("MYNAH_STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3")
 SILENCE_SECONDS = float(os.getenv("MYNAH_SILENCE", "0.9"))      # quiet this long = he is done
 THRESHOLD = float(os.getenv("MYNAH_VAD_THRESHOLD", "0.5"))      # speech probability that counts as speech
+WARM_SECONDS = 3.0   # idle time between model warm-ups
 BARGE_THRESHOLD = float(os.getenv("MYNAH_BARGE_THRESHOLD", "0.85"))  # stricter while a reply is playing
 MIN_SPEECH_SECONDS = 0.25                    # shorter blips (clicks, a cough) are dropped
 BARGE_SPEECH_SECONDS = 0.25                  # sustained speech over a reply before it is cut off
@@ -93,6 +94,30 @@ def usable_transcript(text):
     if not words or all(_FILLER_RE.match(w.replace("'", "")) for w in words):
         return None
     return text
+
+
+_WAKE_PREFIX = {"hey", "hi", "ok", "okay", "oh", "um", "uh", "so"}
+
+
+def addressed_to_alexa(text):
+    """True when the transcript starts by calling an Alexa/Echo (Trevor talks to his speaker too, and Alexa
+    commands must not reach the orchestrator). Fuzzy on the first word because Parakeet mishears the name
+    ("Luxa", "Alexis", "Lexa", "A Lexa", "Alexa,"); an optional "hey"/"okay" before it is skipped."""
+    from difflib import SequenceMatcher
+    words = normalize(text).split()
+    while words and words[0] in _WAKE_PREFIX:
+        words = words[1:]
+    if not words:
+        return False
+    candidates = [words[0]]
+    if len(words) > 1 and len(words[0]) <= 2:
+        candidates.append(words[0] + words[1])      # "a lexa"
+    for w in candidates:
+        if w in ("echo", "eko", "eco"):
+            return True
+        if 3 <= len(w) <= 7 and SequenceMatcher(None, w, "alexa").ratio() >= 0.66:
+            return True
+    return False
 
 
 def level_db(audio):
@@ -248,6 +273,9 @@ class Listener(threading.Thread):
 
     # ---- state shown by `hooks/voice-mode status`
     def set_state(self, state):
+        if self.muted and state not in ("off", "loading"):
+            # the companion shows "muted" even while a reply speaks: "muted" alone, or "<state>-muted"
+            state = "muted" if state in ("listening", "hearing", "muted") else state + "-muted"
         if state != self.state:
             self.state = state
             try:
@@ -277,15 +305,25 @@ class Listener(threading.Thread):
             logger.info(f"Microphone open ({sd.query_devices(sd.default.device[0])['name']})")
 
     def release_mic(self):
-        """Close the microphone. Speaker calls this before it refreshes PortAudio's device list."""
+        """Close the microphone. Speaker calls this before it refreshes PortAudio's device list.
+        PortAudio's stop() can hang for good inside CoreAudio (seen 2026-11-04 16:18: every reply thread queued
+        behind it, the state stuck at 'speaking', the process dead). So it runs on a helper thread that is given
+        2 s; a stream that will not stop is abandoned (its callback goes quiet) instead of freezing everything."""
         with self.stream_lock:
             stream, self.stream = self.stream, None
-            if stream is not None:
+        if stream is not None:
+            def close():
                 try:
                     stream.stop()
                     stream.close()
                 except Exception as e:
                     logger.warning(f"Closing the microphone failed: {e}")
+            th = threading.Thread(target=close, daemon=True, name="mic-close")
+            th.start()
+            th.join(2.0)
+            if th.is_alive():
+                logger.error("Closing the microphone hung (CoreAudio); abandoning that stream")
+            else:
                 logger.info("Microphone closed")
         self.drain_frames()
         self.endpointer.reset()
@@ -350,16 +388,40 @@ class Listener(threading.Thread):
         ok = score >= self.speaker_threshold
         logger.info(f"Voice match {score:.2f} (threshold {self.speaker_threshold:.2f}): "
                     + ("Trevor" if ok else "someone else, ignored"))
+        if not ok:
+            self.keep_rejected(audio, score)
         return ok
+
+    def keep_rejected(self, audio, score):
+        """Diagnostics: log what a rejected utterance said and keep the last 10 as wav, so the threshold can be tuned."""
+        try:
+            import wave
+            d = Path.home() / ".local/state/mynah/rejected"
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / f"{time.strftime('%H%M%S')}-{score:.2f}.wav"
+            with wave.open(str(p), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+                w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+            for old in sorted(d.glob("*.wav"))[:-10]:
+                old.unlink()
+            logger.info(f"  rejected said {self.transcribe(audio)!r} at {level_db(audio):.0f} dBFS (kept {p.name})")
+        except Exception as e:
+            logger.warning(f"keep_rejected failed: {e}")
 
     def deliver(self, text):
         """Act on a transcript - only if the mode is still on (it may have been switched off meanwhile)."""
         if not mode_on():
             logger.info("Voice mode is off: speech discarded")
             return
+        if self.muted:
+            logger.info("Muted: speech discarded")
+            return
         if is_stop_command(text):
             logger.info("Spoken stop command: voice mode off")
             MODE_FILE.unlink(missing_ok=True)
+            return
+        if addressed_to_alexa(text):
+            logger.info(f"ignored: addressed to Alexa ({text!r})")
             return
         text = usable_transcript(text)
         if text is None:
@@ -372,7 +434,6 @@ class Listener(threading.Thread):
             self.speaker.say("I could not send that.")
             return
         logger.info(f"Sent to the orchestrator: {text!r}")
-        play_cue("Tink")
         self.idle_state = "waiting"
         self.set_state("waiting")
 
@@ -424,11 +485,28 @@ class Listener(threading.Thread):
 
     def turn_off(self):
         logger.info("Voice mode off")
+        self.muted = False
         self.release_mic()
         self.set_state("off")
         self.speaker.say("Voice mode off.")
 
+    muted = False
+
+    def set_muted(self, muted):
+        """Tap of the push-to-talk key: stop listening (mic closed, nothing heard) or listen again. Voice mode
+        stays on and replies are still spoken. Always cleared when the mode is switched off."""
+        if muted == self.muted:
+            return
+        self.muted = muted
+        logger.info("Muted: the microphone is ignored until the key is tapped again" if muted else "Unmuted: listening")
+        play_cue("Basso" if muted else "Pop")
+        if muted:
+            self.release_mic()
+        self.set_state("speaking" if self.speaker.speaking else self.idle_state)
+
     def mic_wanted(self, speaking):
+        if self.muted:
+            return False
         if self.suspended():
             return False
         if speaking and (self.half_duplex is not False):   # undecided counts as shut
@@ -451,12 +529,43 @@ class Listener(threading.Thread):
             "voice": "microphone open for barge-in (headphones)",
             "echo": "microphone open for barge-in, echo cancelled"}[self.mode])
 
+    diag = {"n": 0, "vad_ms": 0.0, "lag_ms": 0.0, "prob": 0.0, "level": -99.0}
+
+    last_warm = 0.0
+
+    def keep_models_warm(self):
+        """With little free memory macOS pages an idle process's weights out; the next transcription then took
+        20-30 s (measured 2026-11-04: 0.6 s normally) reading ~1 GB back. A tiny transcription and voiceprint
+        every few seconds while idle keep the weights resident, for ~0.1 s of work."""
+        self.last_warm = time.time()
+        try:
+            t = time.perf_counter()
+            noise = (np.random.randn(SAMPLE_RATE) * 0.01).astype(np.float32)
+            self.transcribe(noise)
+            if self.speaker_check and self.verifier is not None and self.verifier.enrolled:
+                self.verifier.embed(noise)
+            took = (time.perf_counter() - t) * 1000
+            if took > 1500:
+                logger.info(f"Model warm-up took {took:.0f} ms (weights had been paged out)")
+        except Exception as e:
+            logger.warning(f"warm-up failed: {e}")
+
+    def log_reply_diag(self):
+        """After each reply: why did (or didn't) speech over it barge in? Peak voice probability after echo
+        cancellation vs the barge threshold, how far behind real time the listener ran, the slowest VAD frame."""
+        d, self.diag = self.diag, {"n": 0, "vad_ms": 0.0, "lag_ms": 0.0, "prob": 0.0, "level": -99.0}
+        if d["n"]:
+            logger.info(f"Barge diag: {d['n']} frames over the reply, peak voice prob {d['prob']:.2f} "
+                        f"(barge needs {BARGE_THRESHOLD}), peak level {d['level']:.0f} dBFS, "
+                        f"slowest VAD {d['vad_ms']:.0f} ms, max lag behind the mic {d['lag_ms']:.0f} ms")
+
     def step(self):
         speaking = bool(self.speaker.speaking)
         if speaking and self.half_duplex is None and getattr(self.speaker, "player", None) is not None:
             self.decide_duplex()   # only once the speaker has refreshed the device list and opened its output
         if not speaking:
             if self.was_speaking:
+                self.log_reply_diag()
                 self.gate_until = time.time() + 0.5   # the room still rings: keep ignoring the reply's tail
                 self.mic_not_before = time.time() + (SPEAKER_TAIL_SECONDS if self.half_duplex else 0)
                 self.idle_state = "listening"
@@ -483,7 +592,17 @@ class Listener(threading.Thread):
             frame = self.aec.process(t, frame)   # the reply's own echo removed
             if frame is None:
                 return
+        t0 = time.perf_counter()
+        if not speaking and not self.endpointer.in_speech and time.time() - self.last_warm > WARM_SECONDS:
+            self.keep_models_warm()
         prob = self.speech_probability(frame)
+        if speaking:
+            d = self.diag
+            d["n"] += 1
+            d["vad_ms"] = max(d["vad_ms"], (time.perf_counter() - t0) * 1000)
+            d["lag_ms"] = max(d["lag_ms"], (time.perf_counter() - t) * 1000)
+            d["prob"] = max(d["prob"], prob)
+            d["level"] = max(d["level"], level_db(frame))
         for kind, payload in self.endpointer.push(frame, prob, speaking):
             if kind == "start":
                 if payload:

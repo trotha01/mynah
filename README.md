@@ -164,6 +164,6 @@ and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
 
 `hooks/companion open` shows Bolt (a little robot) in the Jmacs web view; `companion split` puts it in its own pane. It is a
 read-only page served by `companion/companion.lisp` (port 8860): it follows `~/.local/state/mynah/voice-state`
-(asleep when voice mode is off or speakd is not running, listening, hearing, thinking, speaking) and moves its mouth to
+(asleep only when the voice-mode flag file is absent, i.e. `voice-mode status` says off; listening, hearing, thinking, speaking) and moves its mouth to
 `~/.local/state/mynah/voice-level`, the RMS of the audio speakd is playing (`write_level` in `speakd.py`). Speech cut off
 by you (speaking, then hearing) makes it jump. `?demo=speaking` previews a state without the voice loop.

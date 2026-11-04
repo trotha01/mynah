@@ -97,7 +97,7 @@ async function poll(){
   try{
     const r=await fetch('/api/s',{cache:'no-store'});const j=await r.json();
     lastOk=performance.now();target=Math.min(1,j.level*5);setState(j.state);
-  }catch(e){ if(performance.now()-lastOk>2000){target=0;setState('off');} }
+  }catch(e){ if(performance.now()-lastOk>4000){target=0;setState('off');} }
 }
 setInterval(poll,50);
 const seeds=[0.9,0.6,1,0.7,0.85];let tick=0;

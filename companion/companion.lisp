@@ -2,8 +2,9 @@
 ;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
 ;;;;   GET /          index.html (read from this directory on every request)
 ;;;;   GET /api/s     {"state":"...","level":0.0-..,"alive":true|false}
-;;;; state = the voice loop's state file (off loading listening hearing transcribing waiting speaking), forced to
-;;;; "off" when the speaker daemon is not running; level = RMS of the audio speakd is playing right now
+;;;; state = "off" when the mode file ~/.config/jmacs/voice-conversation is absent (MYNAH_VOICE_MODE_FILE), "loading" when
+;;;; it is present but speakd is not running, else the voice loop's state file (loading listening hearing transcribing
+;;;; waiting speaking); level = RMS of the audio speakd is playing right now
 ;;;; (voice-level, 0 when stale). Read-only: it never touches the voice-mode switch.
 ;;;; Env: MYNAH_VOICE_STATE_FILE, MYNAH_LEVEL_FILE, MYNAH_PID_FILE (all under ~/.local/state/mynah by default).
 
@@ -17,6 +18,8 @@
 (defun state-path (name) (namestring (merge-pathnames (format nil ".local/state/mynah/~a" name) (user-homedir-pathname))))
 (defparameter *state-file* (env "MYNAH_VOICE_STATE_FILE" (state-path "voice-state")))
 (defparameter *level-file* (env "MYNAH_LEVEL_FILE" (state-path "voice-level")))
+(defparameter *mode-file* (env "MYNAH_VOICE_MODE_FILE" (namestring (merge-pathnames ".config/jmacs/voice-conversation" (user-homedir-pathname)))))
+(defvar *last-state* "listening")
 (defparameter *pid-file* (env "MYNAH_PID_FILE" (state-path "speakd.pid")))
 
 (defun log-line (fmt &rest args) (format t "~&companion: ~?~%" fmt args) (finish-output))
@@ -44,12 +47,22 @@
 
 (defun valid-state-p (s) (and s (plusp (length s)) (every (lambda (c) (or (alpha-char-p c) (char= c #\-))) s)))
 
+(defun mode-on-p () (and (probe-file *mode-file*) t))
+
+(defun current-state ()
+  "Voice mode on/off is the mode file (what `voice-mode status` reports), not the speaker's pid or a state-file
+read: listen.py rewrites the state file in place, so a read can see it empty, and the speaker restarts. With the
+mode on, a bad read keeps the last good state and a missing speaker means it is waking up."
+  (if (not (mode-on-p))
+      (progn (setf *last-state* "listening") "off")
+      (let ((st (first-line *state-file*)))
+        (cond ((not (alive-p)) "loading")
+              ((and (valid-state-p st) (string/= st "off")) (setf *last-state* st))
+              (t *last-state*)))))
+
 (defun api-state ()
-  (let* ((alive (alive-p))
-         (st (first-line *state-file*))
-         (state (if (and alive (valid-state-p st)) st "off"))
-         (level (read-level)))
-    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"alive\":~a}" state (min 1 level) (if alive "true" "false"))))
+  (let ((state (current-state)) (level (read-level)))
+    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a}" state (min 1 level) (if (mode-on-p) "true" "false"))))
 
 (defun read-line-bytes (stream)
   (string-right-trim '(#\Return)

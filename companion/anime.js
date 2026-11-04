@@ -66,15 +66,20 @@
   }
   function build(cfg) {
     const ex = cfg.eye, L = [73, 112], Rr = [127, 112];
-    const eye = (s, cx, cy) => `<clipPath id="§c${s}"><ellipse cx="${cx}" cy="${cy}" rx="${ex.rx}" ry="${ex.ry}"/></clipPath>
-      <g class="e${s}"><ellipse cx="${cx}" cy="${cy}" rx="${ex.rx}" ry="${ex.ry}" fill="#fff"/>
+    // The eye is one closed shape: the upper boundary IS the lash curve, the lower boundary is a soft curve below. The eye white,
+    // iris, pupil and highlights are all clipped to it, so nothing can ever cross the lash or the lid (any gaze, blink or squint).
+    const eye = (s, cx, cy) => {
+      const xl = cx - ex.rx - 1.5, xr = cx + ex.rx + 1.5, y0 = cy - 1, up = cy - 2 * ex.ry - 1, lo = cy + 2 * ex.ry + 1;
+      const upper = `M${xl} ${y0} Q${cx} ${up} ${xr} ${y0}`, shape = `${upper} Q${cx} ${lo} ${xl} ${y0}Z`;
+      return `<clipPath id="§c${s}"><path d="${shape}"/></clipPath>
+      <g class="e${s}"><path d="${shape}" fill="#fff"/>
        <g clip-path="url(#§c${s})"><g class="ir${s}"><ellipse cx="${cx}" cy="${cy + 1}" rx="${ex.rx * .8}" ry="${ex.ry * 1.0}" fill="url(#§ig)"/>
         <ellipse class="pl${s}" cx="${cx}" cy="${cy + 1}" rx="${ex.rx * .34}" ry="${ex.ry * .42}" fill="#1b1630"/>
         <ellipse cx="${cx}" cy="${cy - ex.ry * .5}" rx="${ex.rx * .75}" ry="${ex.ry * .38}" fill="#000" opacity=".2"/>
         <circle cx="${cx - ex.rx * .3}" cy="${cy - ex.ry * .3}" r="${ex.rx * .26}" fill="#fff"/><circle cx="${cx + ex.rx * .32}" cy="${cy + ex.ry * .38}" r="${ex.rx * .12}" fill="#fff" opacity=".9"/></g></g>
-       <path d="M${cx - ex.rx - 1.5} ${cy - 1} Q${cx} ${cy - ex.ry - 5} ${cx + ex.rx + 1.5} ${cy - 1}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round"/>
+       <path d="${upper}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round"/>
        <path d="M${cx - ex.rx * .6} ${cy + ex.ry - 1} Q${cx} ${cy + ex.ry + 1.5} ${cx + ex.rx * .6} ${cy + ex.ry - 1}" stroke="${cfg.lash}" stroke-width="1.2" fill="none" opacity=".35"/></g>
-      <path class="sq${s}" d="M${cx - ex.rx} ${cy + 3} Q${cx} ${cy - ex.ry * .95} ${cx + ex.rx} ${cy + 3}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round" opacity="0"/>`;
+      <path class="sq${s}" d="M${cx - ex.rx} ${cy + 3} Q${cx} ${cy - ex.ry * .95} ${cx + ex.rx} ${cy + 3}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round" opacity="0"/>`; };
     const svg = `<defs><linearGradient id="§ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${ex.i1}"/><stop offset="1" stop-color="${ex.i2}"/></linearGradient></defs>
      <g class="bot"><ellipse cx="100" cy="209" rx="52" ry="5" fill="#0000001a"/>
       ${cfg.body}
@@ -209,7 +214,6 @@
       <path d="M62 174 H138 M38 112 H46 M154 112 H162" stroke="${TEAL2}" stroke-width="2.4" stroke-linecap="round"/>
       <circle cx="49" cy="53" r="2.2" fill="${TEAL2}"/><circle cx="151" cy="53" r="2.2" fill="${TEAL2}"/><circle cx="49" cy="163" r="2.2" fill="${TEAL2}"/><circle cx="151" cy="163" r="2.2" fill="${TEAL2}"/>`,
     hairFront: `<path d="M50 94 C48 60 70 54 100 54 C130 54 152 60 150 94 L146 90 L140 78 L130 87 L120 76 L109 85 L99 74 L89 85 L79 76 L68 87 L60 78 L54 90Z" fill="${NAVY}"/>
-      <path d="M54 92 L52 124 Q55 130 60 126 L62 96Z" fill="${NAVY}"/><path d="M146 92 L148 124 Q145 130 140 126 L138 96Z" fill="${NAVY}"/>
       <path d="M72 62 Q100 50 128 62" stroke="#5a6d98" stroke-width="3" fill="none" opacity=".45" stroke-linecap="round"/>` });
 
   /* Hana-03: mostly robot. J's robot head and visor screen, with Hana's anime eyes, brows, blush and small mouth on it. */

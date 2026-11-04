@@ -195,5 +195,5 @@ every 1.6 to 3.5 s, and the mouth shape (a/e/i/o/u) is picked once per syllable.
 and staying there.
 
 Looks: `looks.js` (five early looks), `anime.js` (the robot, Hana, Mio, Yuki, and the robot x anime blends Hana-01, Hana-02, Hana-03).
-`/looks` shows each with an expression sheet; `/` is the live panel and shows `DEFAULT_LOOK` (robot), or `/?look=hana02` to
+`/looks` shows each with an expression sheet; `/` is the live panel and shows `DEFAULT_LOOK` (Hana-02, "half and half", chosen by Trevor as J), or `/?look=robot` etc. to
 preview another.

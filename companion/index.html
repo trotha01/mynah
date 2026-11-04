@@ -18,7 +18,7 @@ body{background:#f4efe6;color:#3a2f2a;font:13px -apple-system,system-ui,sans-ser
 <script>
 /* The live J panel: polls /api/s (voice state, audio level, worker news) and drives the chosen look with the shared
    engine. Pick the look with ?look=robot|hana|mio|yuki|mochi|sprout|nimbus|kit|orbit (default below). */
-const DEFAULT_LOOK='robot';
+const DEFAULT_LOOK='hana02';
 const qs=new URLSearchParams(location.search);
 const look=LOOKS[qs.get('look')]||LOOKS[DEFAULT_LOOK];
 document.body.style.background=look.card.bg;document.body.style.color=look.card.fg;

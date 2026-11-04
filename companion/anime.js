@@ -78,10 +78,10 @@
     const svg = `<defs><linearGradient id="§ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${ex.i1}"/><stop offset="1" stop-color="${ex.i2}"/></linearGradient></defs>
      <g class="bot"><ellipse cx="100" cy="209" rx="52" ry="5" fill="#0000001a"/>
       ${cfg.body}
-      <path d="M86 148 L86 176 Q100 188 114 176 L114 148Z" fill="${cfg.shade}"/>
+      ${cfg.neck || `<path d="M86 148 L86 176 Q100 188 114 176 L114 148Z" fill="${cfg.shade}"/>`}
       <g class="head">
-       <g class="hairB">${cfg.hairBack}</g>
-       <path d="M50 104 C50 66 72 46 100 46 C128 46 150 66 150 104 C150 134 132 158 100 162 C68 158 50 134 50 104Z" fill="${cfg.skin}"/>
+       <g class="hairB">${cfg.hairBack || ''}</g>${cfg.shell || ''}
+       <path d="${cfg.facePath || 'M50 104 C50 66 72 46 100 46 C128 46 150 66 150 104 C150 134 132 158 100 162 C68 158 50 134 50 104Z'}" fill="${cfg.skin}"${cfg.faceStroke ? ` stroke="${cfg.faceStroke}" stroke-width="3"` : ''}/>${cfg.seams || ''}
        <ellipse class="chL" cx="66" cy="132" rx="11" ry="6" fill="${cfg.blush}" opacity=".3"/><ellipse class="chR" cx="134" cy="132" rx="11" ry="6" fill="${cfg.blush}" opacity=".3"/>
        <g class="hatch" stroke="${cfg.blush}" stroke-width="1.6" stroke-linecap="round" opacity="0"><path d="M58 130l4-5M64 132l4-5M70 133l4-5M130 133l4-5M136 132l4-5M142 130l4-5"/></g>
        ${eye('L', L[0], L[1])}${eye('R', Rr[0], Rr[1])}
@@ -90,14 +90,14 @@
        <path class="mc" d="" stroke="${cfg.mouth}" stroke-width="2.6" fill="none" stroke-linecap="round"/>
        <path class="md" d="" fill="${cfg.mouthIn}" opacity="0"/>
        <ellipse class="mo" cx="100" cy="144" rx="4" ry="3" fill="${cfg.mouthIn}" opacity="0"/><ellipse class="mt" cx="100" cy="147" rx="3" ry="1.5" fill="#f08a98" opacity="0"/>
-       <g class="hairF">${cfg.hairFront}</g>${cfg.front || ''}
+       <g class="hairF">${cfg.hairFront || ''}</g>${cfg.front || ''}
       </g>
       <g class="dots" fill="${cfg.dot}" opacity="0"><circle cx="150" cy="40" r="3.6"/><circle cx="161" cy="40" r="3.6"/><circle cx="172" cy="40" r="3.6"/></g></g>`;
     return {
       name: cfg.name, title: cfg.title, blurb: cfg.blurb, card: cfg.card, svg, calm: true, rollBody: false, sheet: true,
       init(s) {
         const R = refs(s, 'eL eR irL irR plL plR sqL sqR bL bR mc md mo mt chL chR hatch hairB hairF head dots');
-        R.tails = [...s.querySelectorAll('.tail')]; R.cues = [...s.querySelectorAll('.cue')];
+        R.tails = [...s.querySelectorAll('.tail')]; R.cues = [...s.querySelectorAll('.cue')]; R.leds = [...s.querySelectorAll('.led')];
         R.cues.forEach(c => { c.dataset.attr = c.getAttribute('fill') === 'none' ? 'stroke' : 'fill'; c.dataset.def = c.getAttribute(c.dataset.attr); });
         return R;
       },
@@ -120,6 +120,11 @@
         R.hairB.setAttribute('transform', `rotate(${(sw + E.roll * .25).toFixed(2)} 100 48)`); R.hairF.setAttribute('transform', `rotate(${(sw * .25).toFixed(2)} 100 48)`);
         R.tails.forEach((t, i) => t.setAttribute('transform', `rotate(${((i ? -1 : 1) * (Math.sin(E.t / 1300 + i) * 2 + E.alert * 2.5) + sw * .4).toFixed(2)} ${i ? 150 : 50} 96)`));
         R.cues.forEach(c => { const at = c.dataset.attr; c.setAttribute(at, (E.cueA > .05 && E.cue) ? E.cue : c.dataset.def); });
+        if (R.leds.length) {   // robot LEDs show the voice state (the news colour wins while it is active)
+          const col = { loading: '#ffb347', waiting: '#ffb347', transcribing: '#ffb347', listening: '#6ee7a0', hearing: '#6ee7a0', speaking: '#9ff3ea', barge: '#ff6b6b' }[E.st] || '#8a9aa2';
+          const pulse = (E.st === 'hearing' || E.st === 'loading' || E.st === 'waiting' || E.st === 'transcribing') ? .65 + .35 * Math.sin(E.t / (E.st === 'hearing' ? 80 : 160)) : 1;
+          R.leds.forEach(l => { l.setAttribute('fill', (E.cueA > .05 && E.cue) ? E.cue : col); l.setAttribute('opacity', pulse); });
+        }
         dotsAnim(R.dots, E);
       }
     };
@@ -168,4 +173,57 @@
     front: `<path d="M44 104 C38 18 162 18 156 104" stroke="#3a3f5c" stroke-width="6" fill="none" stroke-linecap="round"/>
       <circle cx="46" cy="110" r="13" fill="#3a3f5c"/><circle cx="154" cy="110" r="13" fill="#3a3f5c"/>
       <circle class="cue" cx="46" cy="110" r="6.5" fill="none" stroke="#7df9ff" stroke-width="3"/><circle class="cue" cx="154" cy="110" r="6.5" fill="none" stroke="#7df9ff" stroke-width="3"/>` });
+
+  /* ---------- robot + anime blends: Hana's eyes and expressions with J's robot parts ---------- */
+  const NAVY = '#2e3c5e', TEAL = '#7fc8c4', TEAL2 = '#5fa8a4', METAL = '#5b6b73';
+  const BOB = `<path d="M44 106 C38 54 70 32 100 32 C130 32 162 54 156 106 L158 152 C158 164 148 166 142 160 L138 122 L62 122 L58 160 C52 166 42 164 42 152Z" fill="#26324f"/>`;
+  const BANGS = `<path d="M47 102 C42 54 72 35 100 35 C128 35 158 54 153 102 L148 98 L141 84 L131 93 L120 82 L109 91 L99 80 L89 91 L79 82 L68 93 L59 84 L52 98Z" fill="${NAVY}"/>
+      <path d="M51 100 L49 140 Q52 148 59 143 L63 104Z" fill="${NAVY}"/><path d="M149 100 L151 140 Q148 148 141 143 L137 104Z" fill="${NAVY}"/>
+      <path d="M70 56 Q100 40 130 56" stroke="#5a6d98" stroke-width="3.5" fill="none" opacity=".45" stroke-linecap="round"/>`;
+  const SAILOR = (fill) => `<path d="M64 174 L100 204 L136 174 L124 170 L100 190 L76 170Z" fill="${fill}"/><path d="M92 192 L100 200 L108 192 L100 188Z" fill="#d9485b"/>`;
+
+  /* Hana-01: mostly human. Hana's hair and face with a small antenna, robot ear modules and faint seams. */
+  g.LOOKS.hana01 = build({ ...SKIN, name: 'hana01', title: 'Hana-01: human with robot touches', card: { bg: '#e6f0f7', fg: '#22405c' },
+    blurb: 'Mostly human: Hana with a small antenna on her hair, teal ear modules and a few faint panel seams. The antenna LED shows what J is doing.',
+    lash: '#1d2438', brow: '#2b3550', mouth: '#a8434f', mouthIn: '#8e2f3b', dot: '#5a8fb8', sway: 1.1,
+    eye: { rx: 13, ry: 14.5, i1: '#1d6f78', i2: '#58d0c4' },
+    body: `<path d="M30 215 C30 182 58 168 100 168 C142 168 170 182 170 215Z" fill="#2b3a5c"/><path d="M46 200 L74 178 M154 200 L126 178" stroke="#5fc8c4" stroke-width="2.4" stroke-linecap="round"/>${SAILOR('#f6f8fb')}<circle class="led" cx="100" cy="209" r="3" fill="#6ee7a0"/>`,
+    hairBack: BOB, hairFront: BANGS,
+    seams: `<path d="M60 150 L72 158 M140 150 L128 158 M96 62 H104" stroke="#d3ad97" stroke-width="1.5" fill="none" stroke-linecap="round" opacity=".8"/>`,
+    front: `<path d="M104 36 Q110 22 104 13" stroke="${METAL}" stroke-width="3.2" fill="none" stroke-linecap="round"/><circle class="led" cx="104" cy="10" r="5.5" fill="#6ee7a0"/>
+      <circle cx="47" cy="112" r="10" fill="${TEAL2}"/><circle class="cue" cx="47" cy="112" r="5" fill="none" stroke="#9ff3ea" stroke-width="2.6"/>
+      <circle cx="153" cy="112" r="10" fill="${TEAL2}"/><circle class="cue" cx="153" cy="112" r="5" fill="none" stroke="#9ff3ea" stroke-width="2.6"/>` });
+
+  /* Hana-02: half and half. A robot head shell with a skin-tone face plate in it, Hana's eyes, bangs as hair plates. */
+  g.LOOKS.hana02 = build({ ...SKIN, name: 'hana02', title: 'Hana-02: half and half', card: { bg: '#e3f1ef', fg: '#1f4a4a' },
+    blurb: 'Half and half: a teal robot head with a face plate that carries Hana\'s eyes and expressions, navy bangs as hair plates, ear pods and a state-colored antenna.',
+    lash: '#1d2438', brow: '#2b3550', mouth: '#a8434f', mouthIn: '#8e2f3b', dot: '#3f9a96', sway: .5,
+    eye: { rx: 13, ry: 14.5, i1: '#1d6f78', i2: '#58d0c4' },
+    facePath: 'M52 88 Q52 58 84 58 L116 58 Q148 58 148 88 L148 132 Q148 160 116 160 L84 160 Q52 160 52 132Z', faceStroke: '#d9ad94',
+    neck: `<rect x="86" y="160" width="28" height="18" rx="5" fill="${METAL}"/>`,
+    body: `<path d="M32 215 C32 184 62 172 100 172 C138 172 168 184 168 215Z" fill="${TEAL2}"/><path d="M48 204 H76 M124 204 H152" stroke="#3f8582" stroke-width="2.4" stroke-linecap="round"/>${SAILOR('#2b3a5c')}<circle class="led" cx="100" cy="209" r="3" fill="#6ee7a0"/>`,
+    shell: `<line x1="100" y1="42" x2="100" y2="18" stroke="${METAL}" stroke-width="4" stroke-linecap="round"/><circle class="led" cx="100" cy="13" r="6.5" fill="#6ee7a0"/>
+      <rect x="25" y="94" width="18" height="40" rx="9" fill="${METAL}"/><rect x="157" y="94" width="18" height="40" rx="9" fill="${METAL}"/>
+      <circle class="cue" cx="34" cy="114" r="4.6" fill="none" stroke="#9ff3ea" stroke-width="2.6"/><circle class="cue" cx="166" cy="114" r="4.6" fill="none" stroke="#9ff3ea" stroke-width="2.6"/>
+      <rect x="38" y="42" width="124" height="132" rx="40" fill="${TEAL}"/>
+      <path d="M62 174 H138 M38 112 H46 M154 112 H162" stroke="${TEAL2}" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="49" cy="53" r="2.2" fill="${TEAL2}"/><circle cx="151" cy="53" r="2.2" fill="${TEAL2}"/><circle cx="49" cy="163" r="2.2" fill="${TEAL2}"/><circle cx="151" cy="163" r="2.2" fill="${TEAL2}"/>`,
+    hairFront: `<path d="M50 94 C48 60 70 54 100 54 C130 54 152 60 150 94 L146 90 L140 78 L130 87 L120 76 L109 85 L99 74 L89 85 L79 76 L68 87 L60 78 L54 90Z" fill="${NAVY}"/>
+      <path d="M54 92 L52 124 Q55 130 60 126 L62 96Z" fill="${NAVY}"/><path d="M146 92 L148 124 Q145 130 140 126 L138 96Z" fill="${NAVY}"/>
+      <path d="M72 62 Q100 50 128 62" stroke="#5a6d98" stroke-width="3" fill="none" opacity=".45" stroke-linecap="round"/>` });
+
+  /* Hana-03: mostly robot. J's robot head and visor screen, with Hana's anime eyes, brows, blush and small mouth on it. */
+  g.LOOKS.hana03 = build({ skin: '#1e2b30', shade: '#2f4650', blush: '#ff8fb0', name: 'hana03', title: 'Hana-03: robot with an anime face', card: { bg: '#e8efe9', fg: '#25403f' },
+    blurb: 'Mostly robot: J\'s teal head and dark screen, with Hana\'s big anime eyes, brows, blush and small mouth shown on the screen, plus a navy band and a sailor collar.',
+    lash: '#8ff3e8', brow: '#9ff3ea', mouth: '#9ff3ea', mouthIn: '#ff7f9a', dot: '#2f8f8a', sway: 0,
+    eye: { rx: 13, ry: 14.5, i1: '#1d9aa8', i2: '#8ff3e8' },
+    facePath: 'M52 84 Q52 58 80 58 L120 58 Q148 58 148 84 L148 134 Q148 158 120 158 L80 158 Q52 158 52 134Z',
+    neck: `<rect x="86" y="160" width="28" height="18" rx="5" fill="${METAL}"/>`,
+    body: `<path d="M32 215 C32 184 62 172 100 172 C138 172 168 184 168 215Z" fill="${TEAL2}"/><path d="M50 204 H78 M122 204 H150" stroke="#3f8582" stroke-width="2.4" stroke-linecap="round"/>${SAILOR('#2b3a5c')}<circle class="led" cx="100" cy="209" r="3" fill="#6ee7a0"/>`,
+    shell: `<line x1="100" y1="42" x2="100" y2="16" stroke="${METAL}" stroke-width="4.4" stroke-linecap="round"/><circle class="led" cx="100" cy="11" r="8" fill="#6ee7a0"/>
+      <rect x="20" y="92" width="20" height="44" rx="10" fill="${METAL}"/><rect x="160" y="92" width="20" height="44" rx="10" fill="${METAL}"/>
+      <circle class="cue" cx="30" cy="114" r="5" fill="none" stroke="#9ff3ea" stroke-width="2.8"/><circle class="cue" cx="170" cy="114" r="5" fill="none" stroke="#9ff3ea" stroke-width="2.8"/>
+      <rect x="38" y="42" width="124" height="130" rx="42" fill="${TEAL}"/>
+      <path d="M44 74 Q100 48 156 74" stroke="#2b3a5c" stroke-width="7" fill="none" stroke-linecap="round" opacity=".9"/>`,
+    seams: `<path d="M62 70 L90 62" stroke="#fff" stroke-width="5" opacity=".07" stroke-linecap="round"/>` });
 })(window);

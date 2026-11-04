@@ -27,11 +27,7 @@ const label=document.getElementById('label');
 const LABEL={off:'asleep (voice mode off)',loading:'waking up…',listening:'listening',hearing:'hearing you',transcribing:'thinking…',waiting:'thinking…',speaking:'',barge:'oh!'};
 const IN={state:'off',level:0,q:false,noteKind:'',noteUntil:0,bargeUntil:0};
 let target=0,lastOk=0,noteN=-1;
-function setState(s){
-  if(s===IN.state)return;
-  if(IN.state==='speaking'&&(s==='hearing'||s==='transcribing'))IN.bargeUntil=performance.now()+650;  // barge-in: the user cut the speech off
-  IN.state=s;
-}
+function setState(s){IN.state=s}   // the engine debounces blips and detects barge-in (speaking -> hearing that sticks) itself
 const KCOL={waiting:'#6ee7a0',needs_you:'#ffb347',done:'#7fc8c4',blocked:'#ff6b6b'};
 function showNote(n){   // a worker session changed status (the server also speaks it when voice mode is on)
   if(!n)return;
@@ -52,7 +48,7 @@ let level=0;
 function frame(t){
   level+=(target-level)*(target>level?0.6:0.2);          // quick attack, slower release
   IN.level=level;c.tick(t,IN);
-  label.textContent=(t<IN.bargeUntil?LABEL.barge:LABEL[IN.state])??IN.state;
+  label.textContent=LABEL[c.shown||IN.state]??IN.state;
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -1,13 +1,14 @@
-/* J's expression engine, shared by every look (looks.js, looks.html, index.html).
+/* J's expression engine, shared by every look (looks.js, anime.js, looks.html, index.html).
  A look supplies SVG, init() and apply(); the engine supplies the behaviour:
   - a small fixed expression set (neutral, listening, thinking, happy, speaking, surprised, concerned, sleep), as on a
-    character expression sheet; a director picks ONE expression from the voice state and holds it for a minimum time
-    before it may change (surprised on barge-in may cut in), so J does not flicker between faces;
-  - every parameter eases toward the held expression with a time constant (~0.3 s), so changes read as movement;
+    character expression sheet; a director picks ONE expression from the voice state;
+  - no flicker: a state must last DEBOUNCE ms before it changes anything (a brief blip is ignored), and once an
+    expression shows it is held for a minimum time long enough to read before the face may change again
+    (surprised on a barge-in may cut in after a short beat); transitions themselves are quick (~120 ms);
   - natural blinks: every 3-6.5 s, ~170 ms, occasionally a double blink, never in the middle of a loud word;
-  - slow gaze: a glance every 2.5-5 s (thinking: a bigger glance every 2.5-4 s);
-  - mouth: open amount follows the audio level (fast), and the mouth SHAPE (a/e/i/o/u) is picked once per syllable;
-  - worker-news reactions, thinking dots, and a rare, gentle emphasis squint while speaking. */
+  - glances every 1.6-3 s (thinking) / 1.8-3.5 s (otherwise); mouth openness follows the audio level (fast) and the
+    mouth SHAPE (a/e/i/o/u) is picked once per syllable;
+  - worker-news reactions, thinking dots, and an occasional emphasis squint while speaking. */
 (function (g) {
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const rnd = (a, b) => a + Math.random() * (b - a);
@@ -25,8 +26,9 @@
     concerned: { ...BASE, open: .95, browL: .35, browR: .35, tilt: -.9, gy: .35, pup: 1.05, blush: 0, smile: -.6, alert: -.1, roll: -2 },
     sleep:     { ...BASE, open: .06, browL: -.3, browR: -.3, smile: .1, alert: -.6, blush: .1 }
   };
-  // minimum time (ms) an expression is held before the director may switch away from it
-  const HOLD = { neutral: 1600, listening: 1400, thinking: 1800, happy: 2400, speaking: 1000, surprised: 1500, concerned: 2400, sleep: 800 };
+  // minimum time (ms) an expression is shown before the director may switch away from it (readable, no flash)
+  const HOLD = { neutral: 400, listening: 500, thinking: 800, happy: 1400, speaking: 500, surprised: 1000, concerned: 1400, sleep: 400 };
+  const DEBOUNCE = 300;   // ms a state must last before the face reacts to it
   const GLANCES = [[-1, -.9], [1, -.8], [0, -1.1], [-.8, -.2], [.9, -.3]];
 
   const CSS = `
@@ -87,7 +89,14 @@
     tick(t, IN) {
       const dt = this.lt ? Math.min(100, Math.max(1, t - this.lt)) : 16; this.lt = t;
       const P = this.P, D = this.dir, level = IN.level;
-      const st = (t < IN.bargeUntil) ? 'barge' : IN.state;
+      // debounced state: a blip shorter than DEBOUNCE never reaches the face; a barge-in is speaking -> hearing/thinking that stuck
+      if (this.cand === undefined) { this.cand = IN.state; this.candSince = t; this.stable = IN.state; this.bargeUntil = 0; }
+      if (IN.state !== this.cand) { this.cand = IN.state; this.candSince = t; }
+      if (this.cand !== this.stable && t - this.candSince >= DEBOUNCE) {
+        const prev = this.stable; this.stable = this.cand;
+        if (prev === 'speaking' && (this.stable === 'hearing' || this.stable === 'transcribing')) this.bargeUntil = t + 700;
+      }
+      const st = (t < this.bargeUntil) ? 'barge' : this.stable; this.shown = st;
       const quietish = ['listening', 'waiting', 'transcribing', 'loading'].includes(st);
       // 1. director: which single expression do we want, and may we switch yet?
       let want = 'neutral';
@@ -100,7 +109,7 @@
       if (!D.cur) { D.cur = want; D.since = t; }
       else if (want !== D.cur) {
         const urgent = st === 'barge' && want === 'surprised';
-        if (urgent ? t - D.since > 250 : t - D.since >= (HOLD[D.cur] || 1200)) { D.cur = want; D.since = t; }
+        if (urgent ? t - D.since > 200 : t - D.since >= (HOLD[D.cur] || 1200)) { D.cur = want; D.since = t; }
       }
       const X = EXPR[D.cur], T = { ...X };
       // 2. modifiers on top of the held expression (continuous, no switching)
@@ -109,8 +118,8 @@
       if (st === 'speaking') {
         T.browL += this.env * .3; T.browR += this.env * .3; T.open += this.env * .1; T.alert += this.env * .4;
         if (IN.q) { T.browL += .3; T.browR += .22; T.roll += 3; }
-        if (this.env > .38 && this.env > this.base * 1.6 && t - this.emphT > 3000) this.emphT = t;
-        const e = clamp(1 - (t - this.emphT) / 700, 0, 1), s = e * e * (3 - 2 * e);        // a slow, rare emphasis squint
+        if (this.env > .38 && this.env > this.base * 1.6 && t - this.emphT > 2500) this.emphT = t;
+        const age = t - this.emphT, e = age < 450 ? 1 : clamp(1 - (age - 450) / 350, 0, 1), s = e * e * (3 - 2 * e);   // an emphasis squint: on for ~0.5 s, then back
         T.squint += s * .45; T.blush += s * .2; T.browL += s * .2; T.browR += s * .2;
       }
       T.roll += Math.sin(t / 2600) * .8;
@@ -118,12 +127,12 @@
       let big = 0;
       if (D.cur === 'thinking') {
         const gl = this.glance;
-        if (t > gl.next) { gl.i = (gl.i + 1 + Math.floor(Math.random() * 3)) % GLANCES.length; gl.next = t + rnd(2500, 4000); big = 1; }
+        if (t > gl.next) { gl.i = (gl.i + 1 + Math.floor(Math.random() * 3)) % GLANCES.length; gl.next = t + rnd(1600, 3000); big = 1; }
         T.gx = GLANCES[gl.i][0]; T.gy = GLANCES[gl.i][1];
       } else if (D.cur === 'loading') { T.gx = Math.sin(t / 900) * .6; }
       else if (D.cur === 'sleep') { T.gx = 0; T.gy = 0; }
       else {
-        if (t > this.sacc.next) { this.sacc.x = rnd(-.3, .3); this.sacc.y = rnd(-.2, .15); this.sacc.next = t + rnd(2500, 5000); big = Math.abs(this.sacc.x) > .22 ? 1 : 0; }
+        if (t > this.sacc.next) { this.sacc.x = rnd(-.3, .3); this.sacc.y = rnd(-.2, .15); this.sacc.next = t + rnd(1800, 3500); big = Math.abs(this.sacc.x) > .22 ? 1 : 0; }
         T.gx += this.sacc.x * (D.cur === 'speaking' ? .5 : 1); T.gy += this.sacc.y * (D.cur === 'speaking' ? .5 : 1);
       }
       // 4. blinks
@@ -149,17 +158,17 @@
       } else this.shape = X.shape || 'c';
       this.lastLevel = level;
       // 6. ease everything toward the held expression
-      const slow = D.cur === 'surprised' && t - D.since < 400 ? 110 : 300;
+      const slow = D.cur === 'surprised' && t - D.since < 300 ? 70 : 120;
       for (const k in T) {
         if (k === 'shape' || k === 'mouth') continue;
-        const tau = (k === 'gx' || k === 'gy') ? 190 : slow;
+        const tau = (k === 'gx' || k === 'gy') ? 140 : slow;
         P[k] += (T[k] - P[k]) * (1 - Math.exp(-dt / tau));
       }
-      const mTau = st === 'speaking' ? (mT > P.mouth ? 55 : 110) : 170;
+      const mTau = st === 'speaking' ? (mT > P.mouth ? 55 : 110) : 120;
       P.mouth += (mT - P.mouth) * (1 - Math.exp(-dt / mTau));
       this.svg.dataset.s = st;
       const cueOn = t < IN.noteUntil && st !== 'speaking' && st !== 'barge';
-      this.cueA += ((cueOn ? 1 : 0) - this.cueA) * (1 - Math.exp(-dt / 250));
+      this.cueA += ((cueOn ? 1 : 0) - this.cueA) * (1 - Math.exp(-dt / 150));
       const E = this._E(t, bl, st, cueOn ? (KCOL[IN.noteKind] || '') : '', this.cueA);
       this.look.apply(this.R, E, this.svg);
       if (this.look.rollBody !== false && this.R.bot) this.R.bot.style.rotate = P.roll.toFixed(1) + 'deg';

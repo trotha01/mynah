@@ -185,11 +185,15 @@ mouth from the audio level, thinking dots, worker-news reactions); `companion/lo
 Buttons pick a state, "Auto tour" cycles all of them, "Live" follows the real voice loop. `?state=speaking&cycle=0&warm=1`
 renders one settled state (used for screenshots); `?look=kit` shows a single look. The main page (`/`) is still the robot.
 
-### Calm expressions and the anime options
+### Expressions, timing and the looks
 
-`engine.js` now holds one expression from a fixed set (neutral, listening, thinking, happy, speaking, surprised, concerned, sleep)
-for a minimum time (1.0 to 2.4 s), eases every parameter in over about 0.3 s, blinks every 3 to 6.5 s (about 170 ms, sometimes
-a double blink, not in the middle of a loud word), glances every 2.5 to 5 s, and picks the mouth shape (a/e/i/o/u) once per
-syllable. `anime.js` has the robot (ported) and three original female anime-style looks, Hana, Mio and Yuki, each with an
-expression sheet on `/looks` (expressions, mouth shapes, eye states). The main page `/` shows `DEFAULT_LOOK` (robot); preview
-another with `/?look=hana`.
+`companion/engine.js` is the shared expression engine. It holds one expression from a fixed set (neutral, listening, thinking,
+happy, speaking, surprised, concerned, sleep). It never flickers: a state must last 300 ms before the face reacts (blips are
+ignored), and a shown expression is held 0.4 to 1.4 s so it can be read before the face changes again; transitions themselves are
+quick (~120 ms). Blinks come every 3 to 6.5 s (about 170 ms, sometimes a double blink, not in the middle of a loud word), glances
+every 1.6 to 3.5 s, and the mouth shape (a/e/i/o/u) is picked once per syllable. A barge-in is speaking turning into hearing
+and staying there.
+
+Looks: `looks.js` (five early looks), `anime.js` (the robot, Hana, Mio, Yuki, and the robot x anime blends Hana-01, Hana-02, Hana-03).
+`/looks` shows each with an expression sheet; `/` is the live panel and shows `DEFAULT_LOOK` (robot), or `/?look=hana02` to
+preview another.

@@ -29,18 +29,19 @@ button.on{background:var(--on);color:#fff;border-color:var(--on)}
 .card .stage{padding:10px 10px 0;display:flex;justify-content:center}.card .stage svg{width:100%;max-width:200px;height:auto}
 .card .info{padding:4px 14px 12px}.card .info b{font-size:15px}.card .info p{margin:2px 0 0;font-size:12px;opacity:.85}
 </style></head><body>
-<h1>J: female anime-style options</h1>
-<p class="sub">Three original characters, each with an expression sheet (the fixed set J holds and eases between). Expressions are held 1 to 2.4 s minimum and blend slowly; blinks every 3 to 6.5 s. Pick one and tell me.</p>
+<h1>J: robot × anime blends</h1>
+<p class="sub">Three blends of J (the little robot) and Hana (the anime option), from mostly human to mostly robot, each with an expression sheet (the fixed set J switches between). Brief state blips are ignored and each expression is held long enough to read, then changes quickly; blinks every 3 to 6.5 s. Pick one and tell me.</p>
 <div class="bar" id="bar"></div>
 <div class="big" id="big"></div>
+<h2 class="sec">Earlier anime options (Hana, Mio, Yuki)</h2>
+<div class="big" id="big2"></div>
 <h2 class="sec">Earlier looks</h2>
 <div class="grid" id="grid"></div>
 <script src="/engine.js"></script><script src="/looks.js"></script><script src="/anime.js"></script>
 <script>
 const qs=new URLSearchParams(location.search);
 const IN={state:'listening',level:0,q:false,noteKind:'',noteUntil:0,bargeUntil:0};
-function setState(s){const t=performance.now();if(s===IN.state)return;
-  if(IN.state==='speaking'&&(s==='hearing'||s==='transcribing'))IN.bargeUntil=t+650;IN.state=s}
+function setState(s){IN.state=s}
 const STEPS=[
  {k:'listening',l:'Listening',d:6000,go(){setState('listening')}},
  {k:'hearing',l:'Hearing you',d:3500,go(){setState('hearing')}},
@@ -73,16 +74,19 @@ function cells(row,list,look,vb,base){list.forEach(it=>{const d=document.createE
   if(base==='ex')c.setPose(it[0],it[2]||{});else if(base==='mo')c.setPose('neutral',it[1]);else c.setPose('neutral',it[1]);})}
 function sheet(look,box){
   box.innerHTML='<h4>Expressions</h4><div class="row ex"></div><h4>Mouth shapes (picked once per syllable while speaking)</h4><div class="row mo"></div><h4>Eyes</h4><div class="row ey"></div>'+
-   '<div class="note">Moving parts: brow raise and tilt, eyelid opening, iris position, pupil size, mouth shape, blush, head tilt. The expression is chosen from the voice state, held at least 1 to 2.4 s, and eased in over about 0.3 s.</div>';
+   '<div class="note">Moving parts: brow raise and tilt, eyelid opening, iris position, pupil size, mouth shape, blush, head tilt. The expression is chosen from the voice state (blips under 0.3 s are ignored) and held at least 0.4 to 1.4 s before it can change.</div>';
   cells(box.querySelector('.row.ex'),EXPRS,look,'30 26 140 150','ex');
   cells(box.querySelector('.row.mo'),MOUTHS,look,'60 124 80 40','mo');
   cells(box.querySelector('.row.ey'),EYES,look,'44 82 112 60','ey')}
 const inst=[],only=qs.get('look');
 const big=document.getElementById('big'),grid=document.getElementById('grid');
-['hana','mio','yuki'].filter(n=>!only||n===only).forEach(n=>{const look=LOOKS[n];
+const big2=document.getElementById('big2');
+function opt(n,box){const look=LOOKS[n];
   const o=document.createElement('div');o.className='opt';o.style.background=look.card.bg;o.style.color=look.card.fg;
-  o.innerHTML=`<div class="live"><div class="stage"></div><h3>${look.title}</h3><p>${look.blurb}</p></div><div class="sheet"></div>`;big.appendChild(o);
-  inst.push(new Companion(o.querySelector('.stage'),look));sheet(look,o.querySelector('.sheet'))});
+  o.innerHTML=`<div class="live"><div class="stage"></div><h3>${look.title}</h3><p>${look.blurb}</p></div><div class="sheet"></div>`;box.appendChild(o);
+  inst.push(new Companion(o.querySelector('.stage'),look));sheet(look,o.querySelector('.sheet'))}
+['hana01','hana02','hana03'].filter(n=>!only||n===only).forEach(n=>opt(n,big));
+['hana','mio','yuki'].filter(n=>!only||n===only).forEach(n=>opt(n,big2));
 ['robot','mochi','sprout','nimbus','kit','orbit'].filter(n=>!only||n===only).forEach(n=>{const look=LOOKS[n];
   const c=document.createElement('div');c.className='card';c.style.background=look.card.bg;c.style.color=look.card.fg;
   c.innerHTML=`<div class="stage"></div><div class="info"><b>${look.title}</b><p>${look.blurb}</p></div>`;grid.appendChild(c);
@@ -103,7 +107,7 @@ const fixed=qs.get('state');
 if(fixed){tour=false;const s=STEPS.find(x=>x.k===fixed);if(s){run(STEPS.indexOf(s),false);if(['needs_you','done','blocked'].includes(fixed))IN.noteUntil=1e12}}else run(0);
 // ?warm=1 pre-runs the animation (synthetic time, 60 fps) so a still screenshot shows a settled state
 if(qs.get('warm')){let t=performance.now()+20000;
-  if(fixed==='barge'){for(let i=0;i<150;i++){t+=16;stepFrame(t)}IN.bargeUntil=t+60000;setState('hearing');for(let i=0;i<20;i++){t+=16;stepFrame(t)}}
+  if(fixed==='barge'){for(let i=0;i<150;i++){t+=16;stepFrame(t)}setState('hearing');for(let i=0;i<34;i++){t+=16;stepFrame(t)}}
   else for(let i=0;i<400;i++){t+=16;stepFrame(t)}}
 sync();
 </script></body></html>

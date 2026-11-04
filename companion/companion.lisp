@@ -82,8 +82,41 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
 
 (defun api-state ()
   (let ((state (current-state)) (level (read-level)))
-    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a,\"q\":~a,\"note\":~a,\"vis\":~a}" state (min 1 level) (if (mode-on-p) "true" "false")
-            (if (equal (first-line *kind-file*) "question") "true" "false") (note-json) (read-vis))))
+    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a,\"q\":~a,\"note\":~a,\"vis\":~a,\"workers\":~a}" state (min 1 level) (if (mode-on-p) "true" "false")
+            (if (equal (first-line *kind-file*) "question") "true" "false") (note-json) (read-vis) (roster-json))))
+
+
+;;; Workers roster for the J page: titles and status only, never messages.
+;;; Open worker = status tag running/waiting/needs_you/blocked AND a live tmux window in session "right".
+
+(defparameter *roster-tags* '("needs_you" "blocked" "running" "waiting"))
+(defvar *roster* nil)                               ; list of (short tag), already ordered
+
+(defun live-windows ()
+  "Names of the tmux windows in session right, or :unknown when tmux can't be asked."
+  (let ((out (ignore-errors
+              (with-output-to-string (o)
+                (sb-ext:run-program "/bin/sh" (list "-c" "tmux list-windows -t right -F '#W'")
+                                    :search t :output o :error nil
+                                    :environment (cons "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" nil))))))
+    (if (and out (plusp (length out)))
+        (with-input-from-string (i out) (loop for l = (read-line i nil) while l collect l))
+        :unknown)))
+
+(defun roster-from-rows (rows windows)
+  (let ((order '("needs_you" "blocked" "running" "waiting")) (acc nil))
+    (dolist (r rows)
+      (destructuring-bind (win tag updated name) r
+        (declare (ignore updated))
+        (when (and (member tag *roster-tags* :test #'string=) (prefix-p "right:" win)
+                   (or (eq windows :unknown) (member (subseq win 6) windows :test #'string=)))
+          (push (list name tag) acc))))
+    (stable-sort (nreverse acc) #'< :key (lambda (x) (position (second x) order :test #'string=)))))
+
+(defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows))))
+
+(defun roster-json ()
+  (format nil "[~{~a~^,~}]" (loop for (n tag) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\"}" (json-escape n) tag))))
 
 
 ;;; Worker announcements
@@ -185,7 +218,7 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
   (let ((tick 0))
     (loop
       (handler-case
-          (progn (when (zerop (mod tick 3)) (let ((rows (fetch-workers))) (when rows (detect-changes rows))))
+          (progn (when (zerop (mod tick 3)) (let ((rows (fetch-workers))) (when rows (update-roster rows) (detect-changes rows))))
                  (maybe-speak))
         (error (e) (log-line "watcher error: ~a" e)))
       (incf tick) (sleep 1))))

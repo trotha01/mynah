@@ -166,6 +166,7 @@ class Speaker:
         self.player = None
         self.speaking = False             # a reply is queued or playing (the listener reads it)
         self.listener = None              # listen.Listener: gives up the microphone before devices are refreshed
+        self.auto_paused = False          # ... held by the noise gate (the microphone stays open; the gate resumes it)
         self.paused = False               # the reply is held (Right Command tap); the audio queue is kept
 
     def _chunks(self, text):
@@ -210,15 +211,16 @@ class Speaker:
     def _generate(self, text):
         return self.model.generate(text=text, voice=VOICE, speed=SPEED, lang_code="a", verbose=False)
 
-    def set_paused(self, paused):
+    def set_paused(self, paused, auto=False):
         """Hold or release the reply being spoken. Returns whether the state changed (False when nothing is playing)."""
         with self.lock:
             player = self.player
             if not self.speaking or player is None or paused == self.paused:
                 return False
             self.paused = paused
+            self.auto_paused = paused and auto
             player.paused = paused
-        logger.info("Paused: the reply is held and the microphone is shut" if paused else "Resumed the reply")
+        logger.info(("Paused (noise): the reply is held, the microphone stays open" if auto else "Paused: the reply is held and the microphone is shut") if paused else "Resumed the reply")
         if not paused and self.listener is not None:
             # The microphone reopens on resume and Trevor is usually still finishing what he said to the room: that must not
             # count as barge-in and cancel the reply he just resumed (seen 2026-11-04, 1 s after a resume).
@@ -230,6 +232,7 @@ class Speaker:
             self.token += 1
             self.speaking = False
             self.paused = False
+            self.auto_paused = False
             player = self.player
         if player is not None:
             self._close(player)  # cuts audio that is already playing

@@ -1,8 +1,8 @@
 #!/bin/zsh
-# Bolt, the voice-mode companion (see ../companion/). Read-only: never touches the voice-mode switch.
+# J, the voice-mode companion (see ../companion/). Read-only: never touches the voice-mode switch.
 #   companion start   run the page server on 127.0.0.1:8860 if it is not running
-#   companion open    start, then show Bolt in the Jmacs web view (jmacs open)
-#   companion split   start, then open Bolt in a new pane beside the focused one (jmacs split h)
+#   companion open    start, then show J in the Jmacs web view (jmacs open)
+#   companion split   start, then open J in a new pane beside the focused one (jmacs split h)
 #   companion stop
 here=${0:A:h}; port=${COMPANION_PORT:-8860}; url=http://127.0.0.1:$port/
 up() { curl -fs -m 1 ${url}health >/dev/null 2>&1 }

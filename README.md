@@ -160,9 +160,9 @@ and Parakeet TDT 0.6B v3 (both via mlx-audio, run inside speakd next to Kokoro).
   `tests/replay_listen.py` (real models, `say`-generated audio in place of the mic). Never test against `left`:
   use a throwaway tmux session with `JMACS_LEFT=jmtest` (`jmacs ask` honours it).
 
-## Bolt, the voice companion
+## J, the voice companion
 
-`hooks/companion open` shows Bolt (a little robot) in the Jmacs web view; `companion split` puts it in its own pane. It is a
+`hooks/companion open` shows J (a little robot) in the Jmacs web view; `companion split` puts it in its own pane. It is a
 read-only page served by `companion/companion.lisp` (port 8860): it follows `~/.local/state/mynah/voice-state`
 (asleep only when the voice-mode flag file is absent, i.e. `voice-mode status` says off; listening, hearing, thinking, speaking) and moves its mouth to
 `~/.local/state/mynah/voice-level`, the RMS of the audio speakd is playing (`write_level` in `speakd.py`). Speech cut off

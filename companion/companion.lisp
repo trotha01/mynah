@@ -1,4 +1,4 @@
-;;;; companion: Bolt, the voice-mode character shown in a Jmacs web pane.
+;;;; companion: J, the voice-mode character shown in a Jmacs web pane.
 ;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
 ;;;;   GET /          index.html (read from this directory on every request)
 ;;;;   GET /api/s     {"state":"...","level":0.0-..,"alive":true|false}
@@ -99,7 +99,7 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
          (progn
            (socket-bind sock #(127 0 0 1) port)
            (socket-listen sock 64)
-           (log-line "Bolt on http://127.0.0.1:~d/" port)
+           (log-line "J on http://127.0.0.1:~d/" port)
            (loop
              (let ((client (socket-accept sock)))
                (sb-thread:make-thread

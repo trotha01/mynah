@@ -79,7 +79,8 @@
         <circle cx="${cx - ex.rx * .3}" cy="${cy - ex.ry * .3}" r="${ex.rx * .26}" fill="#fff"/><circle cx="${cx + ex.rx * .32}" cy="${cy + ex.ry * .38}" r="${ex.rx * .12}" fill="#fff" opacity=".9"/></g></g>
        <path d="${upper}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round"/>
        <path d="M${cx - ex.rx * .6} ${cy + ex.ry - 1} Q${cx} ${cy + ex.ry + 1.5} ${cx + ex.rx * .6} ${cy + ex.ry - 1}" stroke="${cfg.lash}" stroke-width="1.2" fill="none" opacity=".35"/></g>
-      <path class="sq${s}" d="M${cx - ex.rx} ${cy + 3} Q${cx} ${cy - ex.ry * .95} ${cx + ex.rx} ${cy + 3}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round" opacity="0"/>`; };
+      <path class="sq${s}" d="M${cx - ex.rx} ${cy + 3} Q${cx} ${cy - ex.ry * .95} ${cx + ex.rx} ${cy + 3}" stroke="${cfg.lash}" stroke-width="3.8" fill="none" stroke-linecap="round" opacity="0"/>
+      <path class="cl${s}" d="M${cx - ex.rx - 1} ${cy + 1} Q${cx} ${cy + 9} ${cx + ex.rx + 1} ${cy + 1}" stroke="${cfg.lash}" stroke-width="3.4" fill="none" stroke-linecap="round" opacity="0"/>`; };
     const svg = `<defs><linearGradient id="§ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${ex.i1}"/><stop offset="1" stop-color="${ex.i2}"/></linearGradient></defs>
      <g class="bot"><ellipse cx="100" cy="209" rx="52" ry="5" fill="#0000001a"/>
       ${cfg.body}
@@ -101,7 +102,7 @@
     return {
       name: cfg.name, title: cfg.title, blurb: cfg.blurb, card: cfg.card, svg, calm: true, rollBody: false, sheet: true,
       init(s) {
-        const R = refs(s, 'eL eR irL irR plL plR sqL sqR bL bR mc md mo mt chL chR hatch hairB hairF head dots');
+        const R = refs(s, 'eL eR clL clR irL irR plL plR sqL sqR bL bR mc md mo mt chL chR hatch hairB hairF head dots');
         R.tails = [...s.querySelectorAll('.tail')]; R.cues = [...s.querySelectorAll('.cue')]; R.leds = [...s.querySelectorAll('.led')];
         R.cues.forEach(c => { c.dataset.attr = c.getAttribute('fill') === 'none' ? 'stroke' : 'fill'; c.dataset.def = c.getAttribute(c.dataset.attr); });
         return R;
@@ -112,7 +113,8 @@
           eyeT(R['e' + s], cx, cy - ex.ry + 3, E.sx, E.open * (1 - E.sq * .15));
           R['ir' + s].setAttribute('transform', `translate(${gsx.toFixed(2)} ${gsy.toFixed(2)})`);
           A(R['pl' + s], { rx: ex.rx * .34 * E.pup, ry: ex.ry * .42 * E.pup });
-          R['e' + s].setAttribute('opacity', 1 - a); R['sq' + s].setAttribute('opacity', a);
+          const z = clamp((.16 - E.open) * 12, 0, 1);   // eyes (nearly) shut, asleep or mid-blink: a closed-lid arc, not a sliver
+          R['e' + s].setAttribute('opacity', (1 - a) * (1 - z)); R['sq' + s].setAttribute('opacity', a * (1 - z)); R['cl' + s].setAttribute('opacity', z);
           const v = side ? E.browL : E.browR, by = 91 - v * 5.5, tt = E.tilt, xo = side ? cx - ex.rx - 1 : cx + ex.rx + 1, xi = side ? cx + ex.rx - 3 : cx - ex.rx + 3;
           const yo = by - tt * 2, yi = by + tt * 3.4, xm = (xo + xi) / 2;
           R['b' + s].setAttribute('d', `M${xo.toFixed(1)} ${yo.toFixed(1)} Q${xm.toFixed(1)} ${(Math.min(yo, yi) - 2.2).toFixed(1)} ${xi.toFixed(1)} ${yi.toFixed(1)}`);

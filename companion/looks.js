@@ -1,5 +1,5 @@
 /* Five alternative looks for J. Each look = SVG markup (viewBox 0 0 200 215) + init() + apply(refs, E): the engine
- (engine.js) gives every look the same states, blinks, glances, emphasis squint, brows, mouth openness and worker-news
+ (engine.js) gives every look the same states, blinks, glances, brows, mouth openness and worker-news
  reactions; a look only decides how those numbers are drawn. */
 (function (g) {
   const { clamp } = g.CMP;

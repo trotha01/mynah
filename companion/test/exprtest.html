@@ -1,0 +1,44 @@
+<!doctype html><meta charset=utf-8><title>J expression stills</title>
+<style>body{margin:0;display:flex;gap:10px;padding:8px}.c{width:220px;height:236px}</style>
+<body>
+<script src="../engine.js"></script><script src="../looks.js"></script><script src="../anime.js"></script>
+<script>
+/* Deterministic stills of the expression track: ?g=<reply index>&s=<sentence index> draws the face at the start, middle and
+   end of that sentence by running the real engine on a virtual clock. ?list=1 prints the sample replies as JSON. */
+const REPLIES = [
+  ["Hello Trevor. I read the latest messages from Mychal, and nothing needs a reply today."],
+  ["The build is done and all tests passed. Careful, though: the deploy will overwrite the live site."],
+  ["Sorry, I couldn't find that file."],
+  ["I think it might be the second one, but I'm not sure."],
+  ["Do you want me to summarize the days in between?"],
+  ["Thanks, that is great news!"],
+  ["The upload failed with a timeout error. I will try again after lunch."],
+  ["He is waiting for you to pick a time for the call."],
+  ["I fixed the bug, and the page works now."],
+  ["Warning: this will permanently delete the folder."],
+  ["Unfortunately the worker is blocked on a permission."],
+  ["Good news, I found the missing photos. There were no errors in the log."]
+];
+const sentences = r => r.flatMap(p => p.split(/(?<=[.?!]) /));
+if (new URLSearchParams(location.search).get('list')) {
+  document.body.innerHTML = '<pre>' + REPLIES.flatMap((r, g) => sentences(r).map((t, i) => 'ROW\t' + g + '\t' + i + '\t' + t)).join('\n') + '</pre>';
+} else {
+  let seed = 7; Math.random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const qs = new URLSearchParams(location.search), g = +qs.get('g'), si = +qs.get('s');
+  const sents = sentences(REPLIES[g]), BASE = 1e6;
+  const wd = []; let u = BASE + 1, n = 0; const bounds = [];
+  sents.forEach(s => { const a = u; s.split(' ').forEach((w, i) => { wd.push([n++, +u.toFixed(3), +(u + .3).toFixed(3), w + ' ', i === 0 ? 1 : 0]); u += .33 }); bounds.push([a, u - .03]); u += .5 });
+  const [a, b] = bounds[si], looks = LOOKS.hana02;
+  const marks = [a + .55, (a + b) / 2, b - .05];
+  for (const tm of marks) {
+    const host = document.createElement('div'); host.className = 'c'; document.body.appendChild(host);
+    const c = new Companion(host, looks), IN = { state: 'speaking', level: .1, q: false, noteKind: '', noteUntil: 0, bargeUntil: 0, lipLag: 0 };
+    c.blink.next = 1e15;
+    for (let ms = -800; ms <= Math.round((tm - BASE) * 1000); ms += 20) {
+      IN.wall = BASE + ms / 1000; IN.vis = { w: IN.wall, ev: [], wd }; c.tick(ms + 1e7, IN);
+    }
+    host.title = c.tone;
+  }
+  document.body.style.background = looks.card.bg;
+}
+</script>

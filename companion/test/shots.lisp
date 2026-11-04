@@ -1,0 +1,26 @@
+;;; sbcl --script shots.lisp OUTDIR  -- one still per sentence (face at start, middle, end), one headless Chrome at a time.
+(require :uiop)
+(defparameter *chrome* "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+(defparameter *page* (namestring (merge-pathnames "exprtest.html" (directory-namestring *load-truename*))))
+(defparameter *out* (second sb-ext:*posix-argv*))
+(defparameter *prof* "/tmp/jexpr-chrome-profile")
+(defun chrome (url &rest args)
+  (uiop:run-program (append (list *chrome* "--headless=new" "--disable-gpu" "--no-first-run"
+                                  (format nil "--user-data-dir=~a" *prof*)) args (list url))
+                    :output :string :error-output nil :ignore-error-status t))
+(ensure-directories-exist (format nil "~a/" *out*))
+(let* ((dom (chrome (format nil "file://~a?list=1" *page*) "--dump-dom"))
+       (rows nil) (start 0))
+  (loop for p = (search "ROW" dom :start2 start) while p
+        do (let* ((e (or (position #\Newline dom :start p) (length dom))) (line (subseq dom p e))
+                  (f (uiop:split-string line :separator '(#\Tab))))
+             (push (list (parse-integer (second f)) (parse-integer (third f)) (string-right-trim "</pre>" (fourth f))) rows) (setf start e)))
+  (setf rows (nreverse rows))
+  (with-open-file (o (format nil "~a/sentences.txt" *out*) :direction :output :if-exists :supersede)
+    (dolist (r rows)
+      (destructuring-bind (g s text) r
+        (let ((png (format nil "~a/r~2,'0d_s~d.png" *out* g s)))
+          (chrome (format nil "file://~a?g=~d&s=~d" *page* g s) (format nil "--screenshot=~a" png) "--window-size=700,255")
+          (format o "~a~c~a~%" (file-namestring png) #\Tab text)
+          (format t "~a ~a~%" (file-namestring png) text)))))
+  (uiop:delete-directory-tree (pathname (format nil "~a/" *prof*)) :validate t :if-does-not-exist :ignore))

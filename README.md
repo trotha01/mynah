@@ -176,3 +176,11 @@ also speaks the line, by writing a `.say` file into the speaker inbox, only afte
 workers are grouped into one line, lines older than 90 s are dropped, the same worker and tag is ignored for 90 s,
 the orchestrator (window `left`) is skipped, and nothing is queued for speech while voice mode is off. The first poll
 after a start only records the current tags.
+
+### Looks
+
+`http://127.0.0.1:8860/looks` compares five alternative looks for J (Mochi, Sprout, Nimbus, Kit, Orbit), each animating through
+the same states. `companion/engine.js` is the shared expression engine (states, blinks, glances, emphasis squint, brows,
+mouth from the audio level, thinking dots, worker-news reactions); `companion/looks.js` holds one SVG + `apply()` per look.
+Buttons pick a state, "Auto tour" cycles all of them, "Live" follows the real voice loop. `?state=speaking&cycle=0&warm=1`
+renders one settled state (used for screenshots); `?look=kit` shows a single look. The main page (`/`) is still the robot.

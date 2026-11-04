@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>J looks</title>
+<style>
+:root{--bg:#f4efe6;--fg:#3a2f2a;--line:#e0d6c6;--pill:#fff;--on:#e8743b}
+@media (prefers-color-scheme:dark){:root{--bg:#171a1c;--fg:#e8e0d4;--line:#33393c;--pill:#23282a}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 -apple-system,system-ui,sans-serif}
+body{padding:14px 16px 28px}
+h1{font-size:18px;margin:0 0 2px}.sub{margin:0 0 10px;opacity:.7}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:5;border-bottom:1px solid var(--line);margin-bottom:12px}
+button{border:1px solid var(--line);background:var(--pill);color:var(--fg);padding:5px 11px;border-radius:999px;font:inherit;cursor:pointer}
+button.on{background:var(--on);color:#fff;border-color:var(--on)}
+.now{margin-left:auto;opacity:.65;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{border-radius:16px;border:1px solid var(--line);overflow:hidden;display:flex;flex-direction:column}
+.stage{padding:10px 10px 0;display:flex;justify-content:center}
+.stage svg{width:100%;max-width:230px;height:auto}
+.info{padding:6px 14px 14px}
+.info h2{margin:0;font-size:17px}.info p{margin:3px 0 0;font-size:13px;opacity:.85}
+</style></head><body>
+<h1>J: new looks</h1>
+<p class="sub">Every look runs the same engine: states, blinks, glances, emphasis squint, brows, worker-news reactions, and a mouth that follows the audio level. Pick one and tell me.</p>
+<div class="bar" id="bar"></div>
+<div class="grid" id="grid"></div>
+<script src="/engine.js"></script><script src="/looks.js"></script>
+<script>
+const qs=new URLSearchParams(location.search);
+const IN={state:'listening',level:0,q:false,noteKind:'',noteUntil:0,bargeUntil:0};
+function setState(s){const t=performance.now();if(s===IN.state)return;
+  if(IN.state==='speaking'&&(s==='hearing'||s==='transcribing'))IN.bargeUntil=t+650;IN.state=s}
+const STEPS=[
+ {k:'listening',l:'Listening',d:3500,go(){setState('listening')}},
+ {k:'hearing',l:'Hearing you',d:2600,go(){setState('hearing')}},
+ {k:'waiting',l:'Thinking',d:4200,go(){setState('waiting')}},
+ {k:'speaking',l:'Speaking',d:4800,go(){setState('speaking');IN.q=false}},
+ {k:'question',l:'Asking a question',d:3800,go(){setState('speaking');IN.q=true}},
+ {k:'barge',l:'Barge-in',d:2400,go(){IN.q=false;setState('speaking');setTimeout(()=>setState('hearing'),900)}},
+ {k:'needs_you',l:'News: needs you',d:3600,go(){setState('listening');note('needs_you')}},
+ {k:'done',l:'News: done',d:3200,go(){setState('listening');note('done')}},
+ {k:'blocked',l:'News: blocked',d:3200,go(){setState('listening');note('blocked')}},
+ {k:'off',l:'Asleep',d:2600,go(){setState('off')}},
+ {k:'loading',l:'Waking up',d:2200,go(){setState('loading')}}];
+function note(k){IN.noteKind=k;IN.noteUntil=performance.now()+2800}
+let idx=-1,timer=0,tour=qs.get('cycle')!=='0',live=false;
+const bar=document.getElementById('bar');
+const tb=document.createElement('button');tb.textContent='Auto tour';tb.onclick=()=>{tour=!tour;live=false;sync();if(tour)run((idx+1)%STEPS.length)};bar.appendChild(tb);
+const lb=document.createElement('button');lb.textContent='Live (follow the real voice loop)';lb.onclick=()=>{live=!live;tour=false;clearTimeout(timer);sync()};bar.appendChild(lb);
+const btns=STEPS.map((s,i)=>{const b=document.createElement('button');b.textContent=s.l;b.onclick=()=>{tour=false;live=false;clearTimeout(timer);run(i,false);sync()};bar.appendChild(b);return b});
+const nowEl=document.createElement('span');nowEl.className='now';bar.appendChild(nowEl);
+function sync(){tb.classList.toggle('on',tour);lb.classList.toggle('on',live);btns.forEach((b,i)=>b.classList.toggle('on',!live&&i===idx))}
+function run(i,auto=true){idx=i;STEPS[i].go();nowEl.textContent=STEPS[i].l;sync();clearTimeout(timer);if(auto&&tour)timer=setTimeout(()=>run((i+1)%STEPS.length),STEPS[i].d)}
+// cards
+const grid=document.getElementById('grid'),only=qs.get('look'),inst=[];
+Object.values(LOOKS).filter(l=>!only||l.name===only).forEach(look=>{
+  const c=document.createElement('div');c.className='card';c.style.background=look.card.bg;c.style.color=look.card.fg;
+  c.innerHTML=`<div class="stage"></div><div class="info"><h2>${look.title}</h2><p>${look.blurb}</p></div>`;grid.appendChild(c);
+  inst.push(new Companion(c.querySelector('.stage'),look))});
+// fake speech: syllable bursts with pauses, an occasional emphasised one
+const frac=x=>x-Math.floor(x);
+function fakeLevel(t){const ph=t/1000*4.3,k=Math.floor(ph);if(t%2300<300)return .02;
+  const amp=.25+.6*frac(Math.sin(k*12.9898)*43758.5453)+(k%9===0?.3:0);return Math.min(1,Math.pow(Math.abs(Math.sin(ph*Math.PI)),1.4)*amp)}
+let lvl=0,lastNote=-1,lastOk=0;
+async function poll(){try{const j=await (await fetch('/api/s',{cache:'no-store'})).json();lastOk=performance.now();
+  if(live){setState(j.state);IN.q=!!j.q;lvl=Math.min(1,j.level*5);
+    if(j.note&&j.note.n!==lastNote){if(lastNote!==-1||j.note.age<20){IN.noteKind=j.note.kind;IN.noteUntil=performance.now()+9000}lastNote=j.note.n}}}catch(e){}}
+setInterval(()=>{if(live)poll()},50);
+let smooth=0;
+function stepFrame(t){let target=live?lvl:(IN.state==='speaking'?fakeLevel(t):0);
+  smooth+=(target-smooth)*(target>smooth?.6:.2);IN.level=smooth;
+  inst.forEach(c=>c.tick(t,IN))}
+function frame(t){stepFrame(t);requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+const fixed=qs.get('state');
+if(fixed){tour=false;const s=STEPS.find(x=>x.k===fixed);if(s){run(STEPS.indexOf(s),false);if(['needs_you','done','blocked'].includes(fixed))IN.noteUntil=1e12}}else run(0);
+// ?warm=1 pre-runs the animation (synthetic time) so a still screenshot shows a settled state
+if(qs.get('warm')){let t=performance.now()+9000;const end=t+4000;
+  if(fixed==='barge'){for(let i=0;i<120;i++){t+=16;stepFrame(t)}IN.bargeUntil=t+60000;setState('hearing')}
+  else for(let i=0;i<260;i++){t+=16;stepFrame(t)}}
+sync();
+</script></body></html>

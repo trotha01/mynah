@@ -1,6 +1,7 @@
 ;;;; companion: J, the voice-mode character shown in a Jmacs web pane.
 ;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
 ;;;;   GET /          index.html (read from this directory on every request)
+;;;;   GET /looks     the look comparison page (looks.html + engine.js + looks.js)
 ;;;;   GET /api/s     {"state":"...","level":0.0-..,"on":true|false,"q":true|false}  (q: the reply being spoken ends in "?")
 ;;;; state = "off" when the mode file ~/.config/jmacs/voice-conversation is absent (MYNAH_VOICE_MODE_FILE), "loading" when
 ;;;; it is present but speakd is not running, else the voice loop's state file (loading listening hearing transcribing
@@ -211,6 +212,9 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
     (loop for h = (read-line-bytes stream) until (string= h ""))
     (cond ((prefix-p "/health" path) (send stream "200 OK" "text/plain" "ok"))
           ((prefix-p "/api/s" path) (send stream "200 OK" "application/json" (api-state)))
+          ((prefix-p "/engine.js" path) (send stream "200 OK" "text/javascript; charset=utf-8" (file-bytes (merge-pathnames "engine.js" *dir*))))
+          ((prefix-p "/looks.js" path) (send stream "200 OK" "text/javascript; charset=utf-8" (file-bytes (merge-pathnames "looks.js" *dir*))))
+          ((prefix-p "/looks" path) (send stream "200 OK" "text/html; charset=utf-8" (file-bytes (merge-pathnames "looks.html" *dir*))))
           (t (send stream "200 OK" "text/html; charset=utf-8" (file-bytes (merge-pathnames "index.html" *dir*)))))))
 
 (defun listener (port)

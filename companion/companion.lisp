@@ -98,7 +98,7 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
               (with-output-to-string (o)
                 (sb-ext:run-program "/bin/sh" (list "-c" "tmux list-windows -t right -F '#W'")
                                     :search t :output o :error nil
-                                    :environment (cons "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" nil))))))
+                                    :environment (list (format nil "PATH=~a/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" (sb-posix:getenv "HOME")) (format nil "HOME=~a" (sb-posix:getenv "HOME"))))))))
     (if (and out (plusp (length out)))
         (with-input-from-string (i out) (loop for l = (read-line i nil) while l collect l))
         :unknown)))
@@ -108,15 +108,16 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
     (dolist (r rows)
       (destructuring-bind (win tag updated name) r
         (declare (ignore updated))
-        (when (and (member tag *roster-tags* :test #'string=) (prefix-p "right:" win)
-                   (or (eq windows :unknown) (member (subseq win 6) windows :test #'string=)))
-          (push (list name tag) acc))))
+        (when (and (member tag *roster-tags* :test #'string=) (prefix-p "right:" win))
+          (let ((live (or (eq windows :unknown) (member (subseq win 6) windows :test #'string=))))
+            ;; a worker without a live window is listed only when blocked (shown after the live ones, 'l':0)
+            (when (or live (string= tag "blocked")) (push (list name tag (if live 1 0)) acc))))))
     (stable-sort (nreverse acc) #'< :key (lambda (x) (position (second x) order :test #'string=)))))
 
 (defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows))))
 
 (defun roster-json ()
-  (format nil "[~{~a~^,~}]" (loop for (n tag) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\"}" (json-escape n) tag))))
+  (format nil "[~{~a~^,~}]" (loop for (n tag live) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d}" (json-escape n) tag live))))
 
 
 ;;; Worker announcements

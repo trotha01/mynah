@@ -30,28 +30,39 @@ body.muted::after{content:"";position:fixed;inset:0;border:6px solid #d32f2f;poi
    #5 one system sans, two weights (500, 600/700), few sizes. #6 rows 1.4 line height with 5px padding above and below, on a grid.
    #7 names truncate at the end with an ellipsis (title attr has the full name). #8 hierarchy by weight and lightness, 1.25x step
    (15 to 12-13). #9 fixed position, only transitions animate, 250ms entry. #10 em-free px sizes scale with browser zoom. */
-#crew{position:fixed;z-index:5;left:calc(50% + 280px);top:50%;transform:translateY(-50%);width:clamp(230px,18vw,270px);
+#crew{position:fixed;z-index:5;left:calc(50% + 280px);top:0;bottom:0;padding:max(16px,calc(50vh - 130px)) 0 16px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:flex-start;width:clamp(280px,23vw,340px);
  font:500 17px/1.4 -apple-system,system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--fg);opacity:0;pointer-events:none;transition:opacity .5s}
-#crew.has{opacity:1;pointer-events:auto}
+#crew.has{opacity:1}#crew.has .list,#crew.has .sum{pointer-events:auto}
+/* The list never clips content: it is as tall as the pane allows and then scrolls (wheel, trackpad, touch, keyboard) with no
+   scrollbar; a soft fade at a clipped edge (--ft / --fb, set from the scroll position) shows there is more. */
+#crew .list{display:flex;flex-direction:column;min-height:0}
+#crew ul{overflow-y:auto;min-height:0;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior:contain;outline:none;
+ -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 var(--ft,0px),#000 calc(100% - var(--fb,0px)),transparent 100%);
+ mask-image:linear-gradient(to bottom,transparent 0,#000 var(--ft,0px),#000 calc(100% - var(--fb,0px)),transparent 100%)}
+#crew ul::-webkit-scrollbar{display:none}
+#crew li.x{margin-top:0}#crew li.x .nm{opacity:.78;font-weight:400}#crew li.x .st{font-weight:500;opacity:.78}#crew li.x svg{opacity:.7}
+#crew li.x.first{margin-top:10px}
 #crew .cap{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;opacity:.8;margin:0 0 8px}
 #crew ul{list-style:none;margin:0;padding:0}
-#crew li{display:grid;grid-template-columns:20px 1fr auto;column-gap:10px;align-items:center;padding:5px 0;
+#crew li{display:grid;grid-template-columns:20px 1fr 5.4em;column-gap:16px;align-items:center;padding:5px 0;
  animation:crewin .25s ease both;transition:opacity .4s}
 #crew li.q .nm{opacity:.82}#crew li.n{font-weight:600}
 #crew .nm{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-#crew li.q .st{opacity:1}#crew .st{font-size:15px;font-weight:600;letter-spacing:.03em}#crew li.n .st{font-weight:700}
+#crew li.q .st{opacity:1;font-weight:500}#crew .st{font-size:15px;font-weight:600;letter-spacing:.03em}#crew li.n .st{font-weight:700}
 #crew svg{width:16px;height:16px;display:block;color:color-mix(in srgb,var(--c) 72%,var(--fg));transition:color .4s}
 #crew svg *{transition:opacity .3s}
 #crew .sum{display:none}
 @keyframes crewin{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:none}}
 @media (max-width:999px){
- #crew{left:auto;top:10px;right:12px;transform:none;width:auto;max-width:min(300px,70vw)}
+ #crew{left:auto;top:10px;bottom:auto;padding:0 !important;display:block;right:12px;width:auto;max-width:min(300px,70vw)}
  #crew .sum{display:flex;gap:12px;justify-content:flex-end;font-size:15px;font-weight:600;letter-spacing:.02em;cursor:pointer;padding:3px 0}
  #crew .sum i{font-style:normal}#crew .sum .more{display:none}@media (max-width:640px){#crew .sum .q{display:none}#crew .sum .more{display:inline-flex}}
  #crew .sum span{white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
  #crew .cap{display:none}
- #crew .list{display:none;margin-top:8px;min-width:210px;margin-left:auto;width:max-content;padding:8px 14px;background:color-mix(in srgb,var(--bg) 94%,var(--fg));border-radius:12px;box-shadow:0 4px 18px #0002}
- #crew:hover .list,#crew.open .list{display:block}
+ #crew .list{display:none;margin-top:8px;min-width:210px;margin-left:auto;width:max-content;padding:8px 14px;background:color-mix(in srgb,var(--bg) 95%,var(--fg));border-radius:12px;box-shadow:0 0 0 1px color-mix(in srgb,var(--fg) 14%,transparent),0 6px 22px #0003}
+ #crew .sum::after{content:"\25BE";font-size:18px;opacity:1;line-height:1;align-self:center}
+ #crew .list{max-height:calc(100vh - 64px)}
+ #crew:hover .list,#crew.open .list{display:flex}
 }
 @media (prefers-reduced-motion:reduce){#crew,#crew li,#crew svg{transition:none;animation:none}}
 </style></head><body>
@@ -151,27 +162,42 @@ let crewSig='';
 function workers(list){
   list=(list||[]).filter(x=>CW[x.t]);
   const sig=JSON.stringify(list);if(sig===crewSig)return;crewSig=sig;
+  // Order: needs_you pinned first (J says those aloud), then running, waiting, blocked; a blocked item with no live worker
+  // (server sends l:0; a missing l means live) comes after every live worker. Stable within a group.
+  const RANK={needs_you:0,running:1,waiting:2,blocked:3};
+  const rank=x=>x.l===0?4:RANK[x.t];
+  list=list.map((x,i)=>[x,i]).sort((a,b)=>rank(a[0])-rank(b[0])||a[1]-b[1]).map(p=>p[0]);
+  const keep=crewUl.scrollTop;
   const old=new Map([...crewUl.children].map(li=>[li.dataset.n,li]));
   crewUl.textContent='';
+  let firstX=true;
   for(const x of list){
     const k=CW[x.t],prev=old.get(x.n);
-    const li=document.createElement('li');li.dataset.n=x.n;li.dataset.t=x.t;li.className=k.n?'n':'q';
+    const li=document.createElement('li');li.dataset.n=x.n;li.dataset.t=x.t;li.className=x.l===0?'x'+(firstX&&list.some(y=>y.l!==0)?' first':''):k.n?'n':'q';
+    if(x.l===0)firstX=false;
     li.style.setProperty('--c',k.c);
     li.innerHTML='<svg viewBox="0 0 11 11" aria-hidden="true">'+k.svg+'</svg><span class="nm"></span><span class="st">'+k.w+'</span>';
     li.querySelector('.nm').textContent=x.n;li.title=x.n+' - '+k.w;li.querySelector('svg').style.setProperty('--c',k.c);
     if(prev&&prev.dataset.t===x.t)li.style.animation='none';       // unchanged rows stay put; new or changed rows ease in
     crewUl.appendChild(li);
   }
-  const cnt={};list.forEach(x=>cnt[x.t]=(cnt[x.t]||0)+1);
-  const nq=list.filter(x=>!CW[x.t].n).length;
-  crewSum.innerHTML=['needs_you','blocked','running','waiting'].filter(t=>cnt[t]).map(t=>'<span class="'+(CW[t].n?'u':'q')+'" title="'+cnt[t]+' '+CW[t].w+'" style="--c:'+CW[t].c+'"><svg viewBox="0 0 11 11" style="color:color-mix(in srgb,'+CW[t].c+' 72%,var(--fg))">'+CW[t].svg+'</svg>'+cnt[t]+'<i class="w"> '+CW[t].w+'</i></span>').join('')+(nq?'<span class="more" title="'+nq+' more">+'+nq+' more</span>':'');
+  crewUl.scrollTop=keep;fade();
+  const live=list.filter(x=>x.l!==0);        // the summary counts live workers only
+  const cnt={};live.forEach(x=>cnt[x.t]=(cnt[x.t]||0)+1);
+  const nq=live.filter(x=>!CW[x.t].n).length;
+  crewSum.innerHTML=['needs_you','running','waiting','blocked'].filter(t=>cnt[t]).map(t=>'<span class="'+(CW[t].n?'u':'q')+'" title="'+cnt[t]+' '+CW[t].w+'" style="--c:'+CW[t].c+'"><svg viewBox="0 0 11 11" style="color:color-mix(in srgb,'+CW[t].c+' 72%,var(--fg))">'+CW[t].svg+'</svg>'+cnt[t]+'<i class="w"> '+CW[t].w+'</i></span>').join('')+(nq?'<span class="more" title="'+nq+' more">+'+nq+' more</span>':'');
   crew.classList.toggle('has',list.length>0);
 }
+function fade(){   // fade only the edge that hides more rows
+  const u=crewUl,top=u.scrollTop>2,bot=u.scrollTop+u.clientHeight<u.scrollHeight-2;
+  u.style.setProperty('--ft',top?'48px':'0px');u.style.setProperty('--fb',bot?'48px':'0px');
+}
+crewUl.tabIndex=0;crewUl.addEventListener('scroll',fade,{passive:true});addEventListener('resize',fade);
 crew.addEventListener('click',()=>crew.classList.toggle('open'));
 if(qs.get('still'))document.head.insertAdjacentHTML('beforeend','<style>*{transition:none!important;animation:none!important}</style>');   // ?still=1: for screenshots
 if(qs.get('open'))crew.classList.add('open');   // ?open=1 previews the expanded list
 const demoW=qs.get('workers');
-if(demoW)workers(demoW.split(',').map(s=>{const [n,t]=s.split(':');return {n:decodeURIComponent(n),t}}));
+if(demoW)workers(demoW.split(',').map(s=>{const [n,t,l]=s.split(':');return {n:decodeURIComponent(n),t,l:l==='x'?0:1}}));   // name:tag[:x]  (x = no live worker)
 async function poll(){
   try{
     const r=await fetch('/api/s',{cache:'no-store'});const j=await r.json();

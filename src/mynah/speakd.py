@@ -88,6 +88,19 @@ def write_level(block):
         pass
 
 
+SAY_KIND_FILE = Path(os.getenv("MYNAH_SAY_KIND_FILE", str(Path.home() / ".local/state/mynah/voice-say-kind")))
+
+
+def write_say_kind(text):
+    """Tell the Jmacs companion whether the reply being spoken ends in a question ("question" or "statement"),
+    so J can raise its brows. Only that one word is written, never the text. Never raises."""
+    try:
+        SAY_KIND_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SAY_KIND_FILE.write_text("question\n" if text.rstrip().rstrip("\"')*_ ").endswith("?") else "statement\n")
+    except Exception:
+        pass
+
+
 def tapped_player_class():
     """AudioPlayer that also hands every block it plays to the echo gate (listen.Listener.gate)."""
     from mlx_audio.tts.audio_player import AudioPlayer
@@ -148,6 +161,7 @@ class Speaker:
 
     def say(self, text):
         self.stop()
+        write_say_kind(text)
         with self.lock:
             token = self.token
             self.speaking = True

@@ -1,7 +1,7 @@
 ;;;; companion: J, the voice-mode character shown in a Jmacs web pane.
 ;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
 ;;;;   GET /          index.html (read from this directory on every request)
-;;;;   GET /api/s     {"state":"...","level":0.0-..,"alive":true|false}
+;;;;   GET /api/s     {"state":"...","level":0.0-..,"on":true|false,"q":true|false}  (q: the reply being spoken ends in "?")
 ;;;; state = "off" when the mode file ~/.config/jmacs/voice-conversation is absent (MYNAH_VOICE_MODE_FILE), "loading" when
 ;;;; it is present but speakd is not running, else the voice loop's state file (loading listening hearing transcribing
 ;;;; waiting speaking); level = RMS of the audio speakd is playing right now
@@ -20,6 +20,7 @@
 (defparameter *level-file* (env "MYNAH_LEVEL_FILE" (state-path "voice-level")))
 (defparameter *mode-file* (env "MYNAH_VOICE_MODE_FILE" (namestring (merge-pathnames ".config/jmacs/voice-conversation" (user-homedir-pathname)))))
 (defvar *last-state* "listening")
+(defparameter *kind-file* (env "MYNAH_SAY_KIND_FILE" (state-path "voice-say-kind")))
 (defparameter *pid-file* (env "MYNAH_PID_FILE" (state-path "speakd.pid")))
 
 (defun log-line (fmt &rest args) (format t "~&companion: ~?~%" fmt args) (finish-output))
@@ -62,7 +63,8 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
 
 (defun api-state ()
   (let ((state (current-state)) (level (read-level)))
-    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a}" state (min 1 level) (if (mode-on-p) "true" "false"))))
+    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a,\"q\":~a}" state (min 1 level) (if (mode-on-p) "true" "false")
+            (if (equal (first-line *kind-file*) "question") "true" "false"))))
 
 (defun read-line-bytes (stream)
   (string-right-trim '(#\Return)

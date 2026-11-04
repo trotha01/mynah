@@ -184,3 +184,12 @@ the same states. `companion/engine.js` is the shared expression engine (states, 
 mouth from the audio level, thinking dots, worker-news reactions); `companion/looks.js` holds one SVG + `apply()` per look.
 Buttons pick a state, "Auto tour" cycles all of them, "Live" follows the real voice loop. `?state=speaking&cycle=0&warm=1`
 renders one settled state (used for screenshots); `?look=kit` shows a single look. The main page (`/`) is still the robot.
+
+### Calm expressions and the anime options
+
+`engine.js` now holds one expression from a fixed set (neutral, listening, thinking, happy, speaking, surprised, concerned, sleep)
+for a minimum time (1.0 to 2.4 s), eases every parameter in over about 0.3 s, blinks every 3 to 6.5 s (about 170 ms, sometimes
+a double blink, not in the middle of a loud word), glances every 2.5 to 5 s, and picks the mouth shape (a/e/i/o/u) once per
+syllable. `anime.js` has the robot (ported) and three original female anime-style looks, Hana, Mio and Yuki, each with an
+expression sheet on `/looks` (expressions, mouth shapes, eye states). The main page `/` shows `DEFAULT_LOOK` (robot); preview
+another with `/?look=hana`.

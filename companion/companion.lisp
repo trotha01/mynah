@@ -213,6 +213,7 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
     (cond ((prefix-p "/health" path) (send stream "200 OK" "text/plain" "ok"))
           ((prefix-p "/api/s" path) (send stream "200 OK" "application/json" (api-state)))
           ((prefix-p "/engine.js" path) (send stream "200 OK" "text/javascript; charset=utf-8" (file-bytes (merge-pathnames "engine.js" *dir*))))
+          ((prefix-p "/anime.js" path) (send stream "200 OK" "text/javascript; charset=utf-8" (file-bytes (merge-pathnames "anime.js" *dir*))))
           ((prefix-p "/looks.js" path) (send stream "200 OK" "text/javascript; charset=utf-8" (file-bytes (merge-pathnames "looks.js" *dir*))))
           ((prefix-p "/looks" path) (send stream "200 OK" "text/html; charset=utf-8" (file-bytes (merge-pathnames "looks.html" *dir*))))
           (t (send stream "200 OK" "text/html; charset=utf-8" (file-bytes (merge-pathnames "index.html" *dir*)))))))

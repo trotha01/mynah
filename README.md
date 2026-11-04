@@ -167,3 +167,12 @@ read-only page served by `companion/companion.lisp` (port 8860): it follows `~/.
 (asleep only when the voice-mode flag file is absent, i.e. `voice-mode status` says off; listening, hearing, thinking, speaking) and moves its mouth to
 `~/.local/state/mynah/voice-level`, the RMS of the audio speakd is playing (`write_level` in `speakd.py`). Speech cut off
 by you (speaking, then hearing) makes it jump. J's eyes blink, glance around while thinking, squint and raise its brows on emphasis in the speech, and widen on a question (speakd writes `voice-say-kind`: just the word question or statement) or on barge-in; waiting and idle are a calm breathing. `?demo=speaking` previews a state without the voice loop.
+
+J also announces worker sessions. `companion.lisp` polls todoview (`GET :8850/api/items`, the same todo.org tags the
+`jmacs todo-status` hooks set) and, when a worker's tag changes to waiting, done, needs_you or blocked, shows a note
+bubble and a matching expression, using the :SHORT: name ("Saint videos is waiting for you"). With voice mode on it
+also speaks the line, by writing a `.say` file into the speaker inbox, only after the state has been `listening` for
+2.5 s with no audio and nothing queued in the inbox, so it never talks over a reply or over you. Several pending
+workers are grouped into one line, lines older than 90 s are dropped, the same worker and tag is ignored for 90 s,
+the orchestrator (window `left`) is skipped, and nothing is queued for speech while voice mode is off. The first poll
+after a start only records the current tags.

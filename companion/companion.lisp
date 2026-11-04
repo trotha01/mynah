@@ -103,21 +103,40 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
         (with-input-from-string (i out) (loop for l = (read-line i nil) while l collect l))
         :unknown)))
 
-(defun roster-from-rows (rows windows)
+(defvar *here* (directory-namestring (or *load-truename* *default-pathname-defaults*)))
+
+(defun fetch-cloud ()
+  "List of (tag updated name) for open todo items running in Claude cloud (CLOUD_SESSION), via cloud-items.awk."
+  (ignore-errors
+   (let* ((awk (concatenate 'string *here* "cloud-items.awk"))
+          (out (with-output-to-string (o)
+                 (sb-ext:run-program "/usr/bin/awk" (list "-f" awk (format nil "~a/org/todo.org" (sb-posix:getenv "HOME")))
+                                     :search nil :output o :error nil))))
+     (loop for line in (let ((acc nil)) (with-input-from-string (i out) (loop for l = (read-line i nil) while l do (push l acc))) (nreverse acc))
+           for f = (split-tabs line)
+           when (= (length f) 3) collect f))))
+
+(defun roster-from-rows (rows windows &optional cloud)
+  "Entries (name tag live updated kind); kind is local (live tmux window on this laptop), cloud (Claude cloud session)
+or none (blocked with no worker running anywhere)."
   (let ((acc nil))
     (dolist (r rows)
       (destructuring-bind (win tag updated name) r
         (when (and (member tag *roster-tags* :test #'string=) (prefix-p "right:" win))
           (let ((live (or (eq windows :unknown) (member (subseq win 6) windows :test #'string=))))
             ;; a worker without a live window is listed only when blocked (shown after the live ones, 'l':0)
-            (when (or live (string= tag "blocked")) (push (list name tag (if live 1 0) updated) acc))))))
+            (when (or live (string= tag "blocked")) (push (list name tag (if live 1 0) updated (if live "local" "none")) acc))))))
+    (dolist (c cloud)
+      (destructuring-bind (tag updated name) c
+        (unless (find name acc :key #'first :test #'string=)
+          (push (list name tag 1 updated "cloud") acc))))
     ;; most recently worked on first (the todo item's UPDATED stamp sorts as text); live workers before dead blocked ones
     (stable-sort (stable-sort (nreverse acc) #'string> :key #'fourth) #'> :key #'third)))
 
-(defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows))))
+(defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows) (fetch-cloud))))
 
 (defun roster-json ()
-  (format nil "[~{~a~^,~}]" (loop for (n tag live) in (mapcar (lambda (x) (subseq x 0 3)) *roster*) collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d}" (json-escape n) tag live))))
+  (format nil "[~{~a~^,~}]" (loop for (n tag live nil kind) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d,\"k\":\"~a\"}" (json-escape n) tag live kind))))
 
 
 ;;; Worker announcements

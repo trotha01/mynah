@@ -44,7 +44,7 @@ body.muted::after{content:"";position:fixed;inset:0;border:6px solid #d32f2f;poi
 #crew li.x.first{margin-top:10px}
 #crew .cap{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;opacity:.8;margin:0 0 8px}
 #crew ul{list-style:none;margin:0;padding:0}
-#crew li{display:grid;grid-template-columns:20px 1fr 5.4em;column-gap:16px;align-items:center;padding:5px 0;
+#crew li{display:grid;grid-template-columns:20px 1fr 16px 5.4em;column-gap:14px;align-items:center;padding:5px 0;
  animation:crewin .25s ease both;transition:opacity .4s}
 #crew li.q .nm{opacity:.82}#crew li.n{font-weight:600}
 #crew .nm{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -158,6 +158,9 @@ const CW={needs_you:{w:'needs you',c:'#d9822b',n:1,svg:'<circle cx="5.5" cy="5.5
  blocked:{w:'blocked',c:'#c0392b',n:1,svg:'<rect x=".5" y=".5" width="10" height="10" rx="1.5" fill="currentColor"/>'},
  running:{w:'running',c:'#2e8b57',n:0,svg:'<path d="M1.5 .8 10 5.5 1.5 10.2z" fill="currentColor"/>'},
  waiting:{w:'waiting',c:'#3b78b8',n:0,svg:'<circle cx="5.5" cy="5.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/>'}};
+const KIND={cloud:{w:'Claude cloud',svg:'<path d="M3.2 10.2a2.6 2.6 0 0 1-.3-5.2 3.6 3.6 0 0 1 7-.4 2.9 2.9 0 0 1 .3 5.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>'},
+ local:{w:'this laptop',svg:'<rect x="2.6" y="3" width="8.8" height="6" rx=".8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 11h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'},
+ other:{w:'somewhere else',svg:'<rect x="2.5" y="2" width="9" height="4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="2.5" y="8" width="9" height="4" rx=".8" fill="none" stroke="currentColor" stroke-width="1.3"/>'}};
 let crewSig='';
 function workers(list){
   list=(list||[]).filter(x=>CW[x.t]);
@@ -174,8 +177,8 @@ function workers(list){
     const li=document.createElement('li');li.dataset.n=x.n;li.dataset.t=x.t;li.className=x.l===0?'x'+(firstX&&list.some(y=>y.l!==0)?' first':''):k.n?'n':'q';
     if(x.l===0)firstX=false;
     li.style.setProperty('--c',k.c);
-    li.innerHTML='<svg viewBox="0 0 11 11" aria-hidden="true">'+k.svg+'</svg><span class="nm"></span><span class="st">'+k.w+'</span>';
-    li.querySelector('.nm').textContent=x.n;li.title=x.n+' - '+k.w;li.querySelector('svg').style.setProperty('--c',k.c);
+    li.innerHTML='<svg viewBox="0 0 11 11" aria-hidden="true">'+k.svg+'</svg><span class="nm"></span><svg class="wh" viewBox="0 0 14 14" aria-hidden="true">'+(KIND[x.k]||KIND.other).svg+'</svg><span class="st">'+k.w+'</span>';
+    li.querySelector('.nm').textContent=x.n;li.title=x.n+' - '+k.w+' - '+(KIND[x.k]||KIND.other).w;li.querySelector('svg').style.setProperty('--c',k.c);
     if(prev&&prev.dataset.t===x.t)li.style.animation='none';       // unchanged rows stay put; new or changed rows ease in
     crewUl.appendChild(li);
   }

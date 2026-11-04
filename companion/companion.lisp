@@ -104,20 +104,20 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
         :unknown)))
 
 (defun roster-from-rows (rows windows)
-  (let ((order '("needs_you" "blocked" "running" "waiting")) (acc nil))
+  (let ((acc nil))
     (dolist (r rows)
       (destructuring-bind (win tag updated name) r
-        (declare (ignore updated))
         (when (and (member tag *roster-tags* :test #'string=) (prefix-p "right:" win))
           (let ((live (or (eq windows :unknown) (member (subseq win 6) windows :test #'string=))))
             ;; a worker without a live window is listed only when blocked (shown after the live ones, 'l':0)
-            (when (or live (string= tag "blocked")) (push (list name tag (if live 1 0)) acc))))))
-    (stable-sort (nreverse acc) #'< :key (lambda (x) (position (second x) order :test #'string=)))))
+            (when (or live (string= tag "blocked")) (push (list name tag (if live 1 0) updated) acc))))))
+    ;; most recently worked on first (the todo item's UPDATED stamp sorts as text); live workers before dead blocked ones
+    (stable-sort (stable-sort (nreverse acc) #'string> :key #'fourth) #'> :key #'third)))
 
 (defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows))))
 
 (defun roster-json ()
-  (format nil "[~{~a~^,~}]" (loop for (n tag live) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d}" (json-escape n) tag live))))
+  (format nil "[~{~a~^,~}]" (loop for (n tag live) in (mapcar (lambda (x) (subseq x 0 3)) *roster*) collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d}" (json-escape n) tag live))))
 
 
 ;;; Worker announcements

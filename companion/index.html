@@ -162,10 +162,8 @@ let crewSig='';
 function workers(list){
   list=(list||[]).filter(x=>CW[x.t]);
   const sig=JSON.stringify(list);if(sig===crewSig)return;crewSig=sig;
-  // Order: needs_you pinned first (J says those aloud), then running, waiting, blocked; a blocked item with no live worker
-  // (server sends l:0; a missing l means live) comes after every live worker. Stable within a group.
-  const RANK={needs_you:0,running:1,waiting:2,blocked:3};
-  const rank=x=>x.l===0?4:RANK[x.t];
+  // Order: as the server sends it, most recently worked on first; a blocked item with no live worker (l:0) goes last.
+  const rank=x=>x.l===0?1:0;
   list=list.map((x,i)=>[x,i]).sort((a,b)=>rank(a[0])-rank(b[0])||a[1]-b[1]).map(p=>p[0]);
   const keep=crewUl.scrollTop;
   const old=new Map([...crewUl.children].map(li=>[li.dataset.n,li]));

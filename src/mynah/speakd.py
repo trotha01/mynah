@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import lipsync, viseme
 from .listen import Listener, mode_on
 from .transcript import strip_markdown_for_speech
 
@@ -108,7 +109,11 @@ def tapped_player_class():
     class TappedPlayer(AudioPlayer):
         tap = None
 
+        lipsync = None
+
         def callback(self, outdata, frames, time_info, status):
+            if self.lipsync is not None:
+                self.lipsync.on_block(frames, time_info)   # only records where the stream is (the mouth timeline)
             try:
                 super().callback(outdata, frames, time_info, status)
             finally:  # also when the last block ends the stream (CallbackStop)
@@ -130,6 +135,34 @@ class Speaker:
         self.player = None
         self.speaking = False             # a reply is queued or playing (the listener reads it)
         self.listener = None              # listen.Listener: gives up the microphone before devices are refreshed
+
+    def _chunks(self, text):
+        """Yield (audio, mouth events) per chunk. Drives Kokoro's pipeline directly, so the phonemes and the per-phoneme
+        durations it already computes become the mouth timeline (viseme.py); falls back to plain generate() with no
+        timeline (the mouth then follows loudness) if that is not possible."""
+        import numpy as np
+        started = False
+        try:
+            pipeline = self.model._get_pipeline("a")
+            pipeline.voices = {}
+            for r in pipeline(text, voice=VOICE, speed=SPEED, split_pattern=r"\n+"):
+                audio = np.asarray(r.audio, dtype=np.float32).reshape(-1)
+                if not len(audio):
+                    continue
+                events = None
+                try:
+                    events = viseme.timeline(r.phonemes, np.asarray(r.pred_dur), self.model.vocab, audio)
+                except Exception as e:
+                    logger.warning(f"No mouth timeline for this chunk: {e}")
+                started = True
+                yield audio, events
+            return
+        except Exception as e:
+            if started:
+                raise
+            logger.warning(f"Kokoro pipeline unavailable ({e}); speaking without a mouth timeline")
+        for result in self._generate(text):
+            yield np.asarray(result.audio, dtype=np.float32).reshape(-1), None
 
     def warm_up(self):
         t = time.time()
@@ -154,8 +187,13 @@ class Speaker:
         and close) crashed the process."""
         with self.close_lock:
             try:
+                lip = getattr(player, "lipsync", None)
+                if lip is not None:
+                    lip.stop()   # the audio is cut: the mouth must stop with it
                 player.flush()
                 player.stop_stream()
+                if lip is not None:
+                    lip.stop()   # a last callback may have run in between
             except Exception as e:
                 logger.warning(f"Closing the audio stream failed: {e}")
 
@@ -187,6 +225,8 @@ class Speaker:
             if self.listener is not None:
                 player.tap = self.listener.aec.tap
                 self.listener.aec.reset_reference()
+            player.lipsync = lipsync.LipSync(self.model.sample_rate)
+            lipsync.publish(player.lipsync)
             with self.lock:
                 if token != self.token:
                     self._close(player)
@@ -195,12 +235,13 @@ class Speaker:
             started = time.time()
             first = None
             try:
-                for result in self._generate(text):
+                for audio, events in self._chunks(text):
                     if token != self.token:
                         break
                     if first is None:
                         first = time.time() - started
-                    player.queue_audio(result.audio)
+                    player.lipsync.add_chunk(len(audio), events)
+                    player.queue_audio(audio)
                 if token == self.token:
                     player.wait_for_drain()
                     time.sleep(0.15)  # the last callback is still returning; closing now races its CoreAudio stop (deadlock)
@@ -209,6 +250,7 @@ class Speaker:
             except Exception as e:
                 logger.error(f"Error while speaking: {e}")
             finally:
+                lipsync.publish(None)
                 self._close(player)
                 with self.lock:
                     if self.player is player:

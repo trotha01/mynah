@@ -197,3 +197,17 @@ and staying there.
 Looks: `looks.js` (five early looks), `anime.js` (the robot, Hana, Mio, Yuki, and the robot x anime blends Hana-01, Hana-02, Hana-03).
 `/looks` shows each with an expression sheet; `/` is the live panel and shows `DEFAULT_LOOK` (Hana-02, "half and half", chosen by Trevor as J), or `/?look=robot` etc. to
 preview another.
+
+### Lip sync (J's mouth)
+
+The mouth follows the words, not just the loudness. `speakd` drives Kokoro's pipeline directly and takes the phoneme string and the
+per-phoneme durations Kokoro already predicts (one frame = 25 ms) for each chunk; `src/mynah/viseme.py` turns them into mouth events
+in six anime shapes (M closed for m/b/p and pauses, A, E, I, O, U), grouped like Rhubarb Lip Sync's mouth shapes, with diphthongs
+gliding between two shapes, short stretches merged so the mouth changes about 5 times a second, and the opening scaled by how loud
+that stretch of the audio really is. `src/mynah/lipsync.py` timestamps every event with the moment it reaches the speaker (the
+audio callback only records PortAudio's output time; a thread writes `~/.local/state/mynah/voice-visemes` atomically every 20 ms
+with the next 0.7 s of events). `companion.lisp` passes that file to the page in `/api/s` as `vis`, and `engine.js` shows whichever
+event is current at the page's clock, so polling delay and block size no longer matter. With no schedule (pipeline unavailable)
+the mouth falls back to loudness. `/?lag=40` delays the mouth by 40 ms (negative = earlier) if a Bluetooth speaker needs it.
+Measured (laptop speakers): output latency 48 ms, audio blocks 85 ms, the mouth switches within about one frame (median 24 ms) of
+each event, events reach the page ~0.6 s before they are due.

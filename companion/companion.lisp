@@ -2,7 +2,7 @@
 ;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
 ;;;;   GET /          index.html (read from this directory on every request)
 ;;;;   GET /looks     the look comparison page (looks.html + engine.js + looks.js)
-;;;;   GET /api/s     {"state":"...","level":0.0-..,"on":true|false,"q":true|false}  (q: the reply being spoken ends in "?")
+;;;;   GET /api/s     {"state":"...","level":0.0-..,"on":true|false,"q":true|false,"note":..,"vis":{"w":..,"ev":[[t0,t1,"A",0.6]..]}|null}  (q: the reply being spoken ends in "?")
 ;;;; state = "off" when the mode file ~/.config/jmacs/voice-conversation is absent (MYNAH_VOICE_MODE_FILE), "loading" when
 ;;;; it is present but speakd is not running, else the voice loop's state file (loading listening hearing transcribing
 ;;;; waiting speaking); level = RMS of the audio speakd is playing right now
@@ -30,6 +30,7 @@
 (defparameter *kind-file* (env "MYNAH_SAY_KIND_FILE" (state-path "voice-say-kind")))
 (defparameter *todoview* (env "COMPANION_TODOVIEW" "http://127.0.0.1:8850"))
 (defparameter *inbox* (env "MYNAH_INBOX" (state-path "inbox")))
+(defparameter *vis-file* (env "MYNAH_VISEME_FILE" (state-path "voice-visemes")))
 (defparameter *pid-file* (env "MYNAH_PID_FILE" (state-path "speakd.pid")))
 
 (defun log-line (fmt &rest args) (format t "~&companion: ~?~%" fmt args) (finish-output))
@@ -70,10 +71,15 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
               ((and (valid-state-p st) (string/= st "off")) (setf *last-state* st))
               (t *last-state*)))))
 
+(defun read-vis ()
+  "The viseme schedule speakd publishes (one line of JSON: {\"w\":unix time written,\"ev\":[[t0,t1,shape,open]..]}), or null."
+  (let ((l (first-line *vis-file*)))
+    (if (and l (> (length l) 2) (char= (char l 0) #\{) (char= (char l (1- (length l))) #\})) l "null")))
+
 (defun api-state ()
   (let ((state (current-state)) (level (read-level)))
-    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a,\"q\":~a,\"note\":~a}" state (min 1 level) (if (mode-on-p) "true" "false")
-            (if (equal (first-line *kind-file*) "question") "true" "false") (note-json))))
+    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"on\":~a,\"q\":~a,\"note\":~a,\"vis\":~a}" state (min 1 level) (if (mode-on-p) "true" "false")
+            (if (equal (first-line *kind-file*) "question") "true" "false") (note-json) (read-vis))))
 
 
 ;;; Worker announcements

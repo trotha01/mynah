@@ -5,7 +5,7 @@
   - no flicker: a state must last DEBOUNCE ms before it changes anything (a brief blip is ignored), and once an
     expression shows it is held for a minimum time long enough to read before the face may change again
     (surprised on a barge-in may cut in after a short beat); transitions themselves are quick (~120 ms);
-  - natural blinks: every 3-6.5 s, ~170 ms, occasionally a double blink, never in the middle of a loud word;
+  - natural blinks: every 4-8 s, ~170 ms, occasionally a double blink, never in the middle of a loud word;
   - glances every 1.6-3 s (thinking) / 1.8-3.5 s (otherwise); mouth openness follows the audio level (fast) and the
     mouth SHAPE (a/e/i/o/u) is picked once per syllable;
   - worker-news reactions, thinking dots, and an occasional emphasis squint while speaking. */
@@ -29,6 +29,7 @@
   // minimum time (ms) an expression is shown before the director may switch away from it (readable, no flash)
   const HOLD = { neutral: 400, listening: 500, thinking: 800, happy: 1400, speaking: 500, surprised: 1000, concerned: 1400, sleep: 400 };
   const DEBOUNCE = 300;   // ms a state must last before the face reacts to it
+  const VIS_SHAPE = { M: 'c', A: 'a', E: 'e', I: 'i', O: 'o', U: 'u' };   // viseme.py shapes -> the looks' mouth shapes
   const GLANCES = [[-1, -.9], [1, -.8], [0, -1.1], [-.8, -.2], [.9, -.3]];
 
   const CSS = `
@@ -138,17 +139,27 @@
       // 4. blinks
       const bk = this.blink; let bl = 0;
       if (!bk.t && st !== 'off' && D.cur !== 'surprised') {
-        if (big && t - bk.last > 1200 && Math.random() < .5) bk.next = Math.min(bk.next, t + 60);       // a blink with a big glance
-        if (t >= bk.next && (t - bk.last > 1500 || bk.dbl)) {
-          if (st === 'speaking' && level > .2 && t - bk.last < 9000) bk.next = t + 250;                  // wait for a gap between words
-          else { bk.t = 1; bk.start = t; bk.dur = rnd(150, 200); bk.last = t; const dbl = bk.dbl; bk.dbl = !dbl && Math.random() < .12;
-                 bk.next = dbl ? t + rnd(3200, 6500) : (bk.dbl ? t + bk.dur + rnd(120, 200) : t + rnd(3200, 6500)); }
+        if (t >= bk.next && (t - bk.last > 2500 || bk.dbl)) {
+          if (st === 'speaking' && level > .2 && t - bk.last < 12000) bk.next = t + 250;                  // wait for a gap between words
+          else { bk.t = 1; bk.start = t; bk.dur = rnd(150, 200); bk.last = t; const dbl = bk.dbl; bk.dbl = !dbl && Math.random() < .1;
+                 bk.next = dbl ? t + rnd(4000, 8000) : (bk.dbl ? t + bk.dur + rnd(120, 200) : t + rnd(4000, 8000)); }
         }
       }
       if (bk.t) { const a = (t - bk.start) / bk.dur; bl = a < .4 ? Math.sin(a / .4 * Math.PI / 2) : Math.cos((a - .4) / .6 * Math.PI / 2); if (a >= 1) { bk.t = 0; bl = 0; } }
-      // 5. mouth: openness follows the level quickly; the shape is chosen once per syllable
-      let mT = X.mouth || 0;
-      if (st === 'speaking') {
+      // 5. mouth. With a fresh viseme schedule from speakd (timestamped to when each sound reaches the speaker) the shape and
+      // opening come from the phonemes; without one, openness follows the audio level and the shape is picked per syllable.
+      let mT = X.mouth || 0, vis = null;
+      const V = IN.vis;
+      if (V && V.ev && st !== 'off') {
+        const wall = Date.now() / 1000;
+        if (wall - V.w < .3) {
+          const tw = wall - (IN.lipLag || 0) / 1000;
+          vis = { shape: 'M', open: 0 };
+          for (const e of V.ev) { if (e[0] <= tw && tw < e[1]) { vis = { shape: e[2], open: e[3] }; break; } }
+        }
+      }
+      if (vis) { mT = vis.open; this.shape = VIS_SHAPE[vis.shape] || 'c'; this.visT = t; }
+      else if (st === 'speaking') {
         mT = clamp(level, .04, 1);
         if (level > .12 && this.lastLevel <= .12) {
           const r = Math.random();
@@ -164,7 +175,7 @@
         const tau = (k === 'gx' || k === 'gy') ? 140 : slow;
         P[k] += (T[k] - P[k]) * (1 - Math.exp(-dt / tau));
       }
-      const mTau = st === 'speaking' ? (mT > P.mouth ? 55 : 110) : 120;
+      const mTau = vis ? (mT > P.mouth ? 35 : 60) : st === 'speaking' ? (mT > P.mouth ? 55 : 110) : 120;
       P.mouth += (mT - P.mouth) * (1 - Math.exp(-dt / mTau));
       this.svg.dataset.s = st;
       const cueOn = t < IN.noteUntil && st !== 'speaking' && st !== 'barge';

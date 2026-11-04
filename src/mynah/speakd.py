@@ -132,8 +132,17 @@ def tapped_player_class():
         tap = None
 
         lipsync = None
+        paused = False
 
         def callback(self, outdata, frames, time_info, status):
+            if self.paused:
+                # Paused: play silence and leave the queue alone, so resuming continues from the same sample. The mouth
+                # anchor is not refreshed (the mouth closes and the sample counter holds still).
+                outdata.fill(0)
+                if self.tap is not None:
+                    self.tap(outdata[:, 0])
+                write_level(outdata[:, 0])
+                return
             if self.lipsync is not None:
                 self.lipsync.on_block(frames, time_info)   # only records where the stream is (the mouth timeline)
             try:
@@ -157,9 +166,10 @@ class Speaker:
         self.player = None
         self.speaking = False             # a reply is queued or playing (the listener reads it)
         self.listener = None              # listen.Listener: gives up the microphone before devices are refreshed
+        self.paused = False               # the reply is held (Right Command tap); the audio queue is kept
 
     def _chunks(self, text):
-        """Yield (audio, mouth events) per chunk. Drives Kokoro's pipeline directly, so the phonemes and the per-phoneme
+        """Yield (audio, mouth events, timed words) per chunk. Drives Kokoro's pipeline directly, so the phonemes and the per-phoneme
         durations it already computes become the mouth timeline (viseme.py); falls back to plain generate() with no
         timeline (the mouth then follows loudness) if that is not possible."""
         import numpy as np
@@ -176,15 +186,20 @@ class Speaker:
                     events = viseme.timeline(r.phonemes, np.asarray(r.pred_dur), self.model.vocab, audio)
                 except Exception as e:
                     logger.warning(f"No mouth timeline for this chunk: {e}")
+                words = None
+                try:
+                    words = viseme.word_timeline(getattr(r, "tokens", None), np.asarray(r.pred_dur), len(audio) / self.model.sample_rate)
+                except Exception as e:
+                    logger.warning(f"No word timeline for this chunk: {e}")
                 started = True
-                yield audio, events
+                yield audio, events, words
             return
         except Exception as e:
             if started:
                 raise
             logger.warning(f"Kokoro pipeline unavailable ({e}); speaking without a mouth timeline")
         for result in self._generate(text):
-            yield np.asarray(result.audio, dtype=np.float32).reshape(-1), None
+            yield np.asarray(result.audio, dtype=np.float32).reshape(-1), None, None
 
     def warm_up(self):
         t = time.time()
@@ -195,10 +210,26 @@ class Speaker:
     def _generate(self, text):
         return self.model.generate(text=text, voice=VOICE, speed=SPEED, lang_code="a", verbose=False)
 
+    def set_paused(self, paused):
+        """Hold or release the reply being spoken. Returns whether the state changed (False when nothing is playing)."""
+        with self.lock:
+            player = self.player
+            if not self.speaking or player is None or paused == self.paused:
+                return False
+            self.paused = paused
+            player.paused = paused
+        logger.info("Paused: the reply is held and the microphone is shut" if paused else "Resumed the reply")
+        if not paused and self.listener is not None:
+            # The microphone reopens on resume and Trevor is usually still finishing what he said to the room: that must not
+            # count as barge-in and cancel the reply he just resumed (seen 2026-11-04, 1 s after a resume).
+            self.listener.deaf_until = max(self.listener.deaf_until, time.time() + RESUME_GRACE_SECONDS)
+        return True
+
     def stop(self):
         with self.lock:
             self.token += 1
             self.speaking = False
+            self.paused = False
             player = self.player
         if player is not None:
             self._close(player)  # cuts audio that is already playing
@@ -247,6 +278,7 @@ class Speaker:
             if self.listener is not None:
                 player.tap = self.listener.aec.tap
                 self.listener.aec.reset_reference()
+            player.paused = False
             player.lipsync = lipsync.LipSync(self.model.sample_rate)
             lipsync.publish(player.lipsync)
             with self.lock:
@@ -257,12 +289,12 @@ class Speaker:
             started = time.time()
             first = None
             try:
-                for audio, events in self._chunks(text):
+                for audio, events, words in self._chunks(text):
                     if token != self.token:
                         break
                     if first is None:
                         first = time.time() - started
-                    player.lipsync.add_chunk(len(audio), events)
+                    player.lipsync.add_chunk(len(audio), events, words)
                     player.queue_audio(audio)
                 if token == self.token:
                     player.wait_for_drain()
@@ -321,6 +353,44 @@ class HoldToTalk:
         return bool(self.masks) and all(flags & mask for mask in self.masks)
 
 
+class PauseKey:
+    """Tap of the pause key (Right Command by default, MYNAH_PAUSE_KEY=cmd_r|shift_r|ctrl_r) pauses the reply being spoken, and
+    the next tap resumes it. Like HoldToTalk it only sees modifier flags. A Command press used in a shortcut (any key went
+    down while it was held) is not a tap: CGEventSourceSecondsSinceLastEventType tells when the last key went down."""
+
+    def __init__(self):
+        from Quartz import (CGEventSourceFlagsState, CGEventSourceSecondsSinceLastEventType,
+                            kCGEventSourceStateHIDSystemState, kCGEventKeyDown)
+        name = os.getenv("MYNAH_PAUSE_KEY", "cmd_r")
+        self.mask = _MODIFIER_FLAGS.get(name, 0x10)
+        self._flags = lambda: CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState)
+        self._since_key = lambda: CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGEventKeyDown)
+        self.down_at = None
+        logger.info(f"Pause key: {name} (flag {hex(self.mask)}), tap pauses / resumes the reply")
+
+    def poll(self):
+        """True once, when a clean tap of the key has just ended."""
+        flags = self._flags()
+        down = bool(flags & self.mask)
+        others = flags & 0xFF & ~self.mask & 0x7F                  # another modifier held with it: a chord, not a tap
+        now = time.time()
+        if down and self.down_at is None:
+            self.down_at = now
+            self.chord = bool(others)
+        elif down:
+            self.chord = self.chord or bool(others)
+        elif self.down_at is not None:
+            held, self.down_at = now - self.down_at, None
+            try:
+                key_during = self._since_key() < held + 0.05   # a real key went down while it was held
+            except Exception:
+                key_during = False
+            return held < TAP_SECONDS and not self.chord and not key_during
+        return False
+
+    chord = False
+
+
 def drain_inbox(speaker, quiet=False):
     """Apply the newest pending inbox file: a say, or a stop. Everything older is dropped.
     quiet: take the files but do not speak (Trevor is talking)."""
@@ -351,6 +421,7 @@ def drain_inbox(speaker, quiet=False):
         speaker.say(spoken)
 
 
+RESUME_GRACE_SECONDS = float(os.getenv("MYNAH_RESUME_GRACE", "2.5"))   # after a resume the mic hears nothing for this long
 TAP_SECONDS = 0.5   # a press shorter than this is a tap (mute toggle); longer is hold-to-talk
 
 
@@ -388,6 +459,11 @@ def main():
     except Exception as e:  # speaking must work without it
         logger.warning(f"Push-to-talk interrupt unavailable: {e}")
         hold = None
+    try:
+        pause_key = PauseKey()
+    except Exception as e:
+        logger.warning(f"Pause key unavailable: {e}")
+        pause_key = None
     listener = Listener(speaker, suspended=(hold.held if hold is not None else (lambda: False)))
     speaker.listener = listener
     listener.start()  # idle (no microphone, no models) until ~/.config/jmacs/voice-conversation exists
@@ -412,7 +488,13 @@ def main():
             if was_held and not held and not spoke and time.time() - press_at < TAP_SECONDS and mode_on():
                 listener.set_muted(not listener.muted)   # a short tap with nothing playing: mute / unmute
             was_held = held
-            drain_inbox(speaker, quiet=held)
+            if pause_key is not None and pause_key.poll() and not held:
+                if speaker.paused:
+                    speaker.set_paused(False)
+                elif speaker.speaking:
+                    speaker.set_paused(True)
+            if not speaker.paused:   # a paused reply keeps new replies waiting in the inbox until it is resumed
+                drain_inbox(speaker, quiet=held)
         except Exception as e:
             logger.error(f"Error in the main loop: {e}")
         time.sleep(POLL_SECONDS)

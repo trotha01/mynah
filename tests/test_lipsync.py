@@ -52,3 +52,25 @@ def test_old_anchor_means_nothing_is_playing():
     ls.on_block(2048, ti())
     ls.anchor = (ls.anchor[0], ls.anchor[1], time.monotonic() - 1.0)
     assert ls.snapshot() is None
+
+
+def test_words_are_published_with_absolute_times_and_stable_numbers():
+    ls = lipsync.LipSync(24000)
+    ls.add_chunk(24000, [(0.0, 1.0, "A", 0.5)], [(0.0, 0.4, "Hello "), (0.5, 0.9, "world.")])
+    ls.add_chunk(24000, None, [(0.0, 0.5, "Next ")])
+    ls.on_block(2048, ti())
+    now = time.time()
+    wd = ls.snapshot(now=now)["wd"]
+    assert [w[0] for w in wd] == [0, 1, 2]
+    assert [w[4] for w in wd] == [1, 0, 1]           # each chunk's first word starts a line
+    assert abs(wd[1][1] - (now + 0.048 + 0.5)) < 0.05
+    assert abs(wd[2][1] - (now + 0.048 + 1.0)) < 0.05    # second chunk continues the stream
+
+
+def test_old_words_drop_but_numbers_stay():
+    ls = lipsync.LipSync(24000)
+    ls.add_chunk(24000, None, [(0.0, 0.5, "old ")])
+    ls.add_chunk(24000, None, [(0.0, 0.5, "new ")])
+    ls.on_block(2048, ti())
+    snap = ls.snapshot(now=time.time() + 12.9)      # the first chunk ended > 12 s ago, the second (1 s later) has not
+    assert [w[0] for w in snap["wd"]] == [1]

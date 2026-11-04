@@ -505,7 +505,7 @@ class Listener(threading.Thread):
         self.set_state("speaking" if self.speaker.speaking else self.idle_state)
 
     def mic_wanted(self, speaking):
-        if self.muted:
+        if self.muted or getattr(self.speaker, "paused", False):   # paused: Trevor is talking to the room
             return False
         if self.suspended():
             return False
@@ -573,7 +573,7 @@ class Listener(threading.Thread):
         self.was_speaking = speaking
         if not self.mic_wanted(speaking):
             self.release_mic()
-            self.set_state("speaking" if speaking else self.idle_state)
+            self.set_state("paused" if getattr(self.speaker, "paused", False) else "speaking" if speaking else self.idle_state)
             time.sleep(0.05)
             return
         if self.stream is None:

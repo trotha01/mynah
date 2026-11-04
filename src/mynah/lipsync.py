@@ -16,22 +16,27 @@ from pathlib import Path
 VISEME_FILE = Path(os.getenv("MYNAH_VISEME_FILE", str(Path.home() / ".local/state/mynah/voice-visemes")))
 AHEAD_S = 0.7     # events published ahead of the sound
 BEHIND_S = 0.15   # and a little behind, so a late reader still sees the one in progress
+WORDS_KEEP_S = 12.0   # karaoke words stay published this long after they were spoken (the line above the current one)
 
 
 class LipSync:
     def __init__(self, sample_rate):
         self.sr = float(sample_rate)
         self.lock = threading.Lock()
-        self.chunks = []        # (start sample in the stream, [(t0, t1, shape, open)] in seconds from the chunk start)
+        self.chunks = []        # (start sample in the stream, [(t0, t1, shape, open)] in seconds from the chunk start,
+                                #  first word number, [(t0, t1, text)] words, or None)
+        self.nwords = 0         # words queued so far (their running number lets the page keep its lines when old chunks drop)
         self.queued = 0         # samples queued so far
         self.played = 0         # samples handed to the output so far
         self.anchor = None      # (sample index of the block's first sample, unix time it reaches the speaker, monotonic)
 
-    def add_chunk(self, n_samples, events):
-        """Call before queueing the chunk's audio; events may be None (no timeline: the mouth falls back to loudness)."""
+    def add_chunk(self, n_samples, events, words=None):
+        """Call before queueing the chunk's audio; events may be None (no timeline: the mouth falls back to loudness).
+        words: optional [(t0, t1, text)] seconds from the chunk start, shown as karaoke text."""
         with self.lock:
-            if events:
-                self.chunks.append((self.queued, events))
+            if events or words:
+                self.chunks.append((self.queued, events or [], self.nwords, words or []))
+            self.nwords += len(words or [])
             self.queued += int(n_samples)
 
     def on_block(self, frames, time_info):
@@ -62,13 +67,23 @@ class LipSync:
         out = []
         with self.lock:
             chunks = list(self.chunks)
-        for start, events in chunks:
+        wd = []
+        for start, events, n0, words in chunks:
             for t0, t1, shape, op in events:
                 u_a = u0 + (start + t0 * self.sr - s0) / self.sr
                 u_b = u0 + (start + t1 * self.sr - s0) / self.sr
                 if u_b > now - BEHIND_S and u_a < now + AHEAD_S:
                     out.append([round(u_a, 3), round(u_b, 3), shape, op])
-        return {"w": round(now, 3), "ev": out}
+            # every word of a chunk that has not finished long ago, upcoming ones included: [number, start, end, text, 1 if it
+            # opens a chunk (a paragraph: the page starts a new line there)]
+            ws = [[n0 + i, round(u0 + (start + a * self.sr - s0) / self.sr, 3), round(u0 + (start + b * self.sr - s0) / self.sr, 3), txt, 1 if i == 0 else 0]
+                  for i, (a, b, txt) in enumerate(words)]
+            if ws and ws[-1][2] > now - WORDS_KEEP_S:
+                wd.extend(ws)
+        snap = {"w": round(now, 3), "ev": out}
+        if wd:
+            snap["wd"] = wd
+        return snap
 
 
 _current = None

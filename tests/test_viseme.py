@@ -56,3 +56,21 @@ def test_louder_audio_opens_wider():
     a = [e for e in tl("ɑ", frames_each=6, audio=quiet) if e[2] == "A"][0][3]
     b = [e for e in tl("ɑ", frames_each=6, audio=loud) if e[2] == "A"][0][3]
     assert a <= 1 and b <= 1 and a > 0
+
+
+def test_word_timeline_glues_punctuation_and_fits_the_audio():
+    from types import SimpleNamespace as N
+    toks = [N(text="Hi", whitespace="", start_ts=0.1, end_ts=0.3), N(text=",", whitespace=" ", start_ts=None, end_ts=None),
+            N(text="you", whitespace="", start_ts=0.4, end_ts=0.8), N(text=".", whitespace="", start_ts=None, end_ts=None)]
+    w = viseme.word_timeline(toks, [1] * 40, audio_s=2.0)    # 40 frames = 1.0 s predicted, 2.0 s real: stretched x2
+    assert [x[2] for x in w] == ["Hi, ", "you."]
+    assert abs(w[0][0] - 0.2) < 1e-6 and abs(w[1][1] - 1.6) < 1e-6
+    assert viseme.word_timeline(None, [1], 1.0) is None
+
+
+def test_word_timeline_glues_timed_punctuation_too():
+    from types import SimpleNamespace as N
+    toks = [N(text="Hi", whitespace="", start_ts=0.0, end_ts=0.3), N(text=",", whitespace=" ", start_ts=0.3, end_ts=0.4),
+            N(text="you", whitespace="", start_ts=0.4, end_ts=0.8)]
+    w = viseme.word_timeline(toks, [1] * 32, audio_s=0.8)
+    assert [x[2] for x in w] == ["Hi, ", "you"] and abs(w[0][1] - 0.4) < 1e-6

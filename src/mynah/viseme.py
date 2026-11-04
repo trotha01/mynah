@@ -162,3 +162,31 @@ def timeline(phonemes, pred_dur, vocab, audio=None, frame_s=FRAME_S):
         events.append((round(t, 4), round(t1, 4), shape, round(min(1.0, ap), 3)))
         t = t1
     return events
+
+
+def word_timeline(tokens, pred_dur, audio_s, frame_s=FRAME_S):
+    """[(t0, t1, text)] in seconds from the chunk start: one entry per spoken word, for the on-screen karaoke text.
+
+    tokens: misaki tokens from Kokoro's pipeline (text, whitespace, start_ts, end_ts; punctuation has no timestamps and is
+    glued to the word before it, or to the next word at the start); pred_dur: Kokoro's per-token frame counts; audio_s: the
+    chunk's real length, used to stretch the predicted times onto the audio (the same way the mouth timeline is fitted).
+    Returns None when there are no usable tokens."""
+    if not tokens:
+        return None
+    total = float(sum(int(x) for x in pred_dur)) * frame_s
+    k = (audio_s / total) if total > 0 and audio_s > 0 else 1.0
+    out, lead = [], ""
+    for t in tokens:
+        text = (getattr(t, "text", "") or "") + (getattr(t, "whitespace", "") or "")
+        a, b = getattr(t, "start_ts", None), getattr(t, "end_ts", None)
+        if a is None or b is None or (out and not any(c.isalnum() for c in text)):
+            if out:
+                out[-1][2] += text
+                if b is not None:
+                    out[-1][1] = max(out[-1][1], b * k)    # the highlight stays on the word through its comma or full stop
+            else:
+                lead += text
+            continue
+        out.append([max(0.0, a * k), max(a * k, b * k), lead + text])
+        lead = ""
+    return [tuple(w) for w in out] or None

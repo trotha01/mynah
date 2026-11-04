@@ -1,0 +1,104 @@
+;;;; companion: Bolt, the voice-mode character shown in a Jmacs web pane.
+;;;; sbcl --script companion.lisp [port]     (default 8860, bound to 127.0.0.1)
+;;;;   GET /          index.html (read from this directory on every request)
+;;;;   GET /api/s     {"state":"...","level":0.0-..,"alive":true|false}
+;;;; state = the voice loop's state file (off loading listening hearing transcribing waiting speaking), forced to
+;;;; "off" when the speaker daemon is not running; level = RMS of the audio speakd is playing right now
+;;;; (voice-level, 0 when stale). Read-only: it never touches the voice-mode switch.
+;;;; Env: MYNAH_VOICE_STATE_FILE, MYNAH_LEVEL_FILE, MYNAH_PID_FILE (all under ~/.local/state/mynah by default).
+
+(require :sb-bsd-sockets)
+(require :sb-posix)
+(defpackage :companion (:use :cl :sb-bsd-sockets))
+(in-package :companion)
+
+(defparameter *dir* (directory-namestring (or *load-truename* *default-pathname-defaults*)))
+(defun env (name default) (let ((v (sb-posix:getenv name))) (if (and v (string/= v "")) v default)))
+(defun state-path (name) (namestring (merge-pathnames (format nil ".local/state/mynah/~a" name) (user-homedir-pathname))))
+(defparameter *state-file* (env "MYNAH_VOICE_STATE_FILE" (state-path "voice-state")))
+(defparameter *level-file* (env "MYNAH_LEVEL_FILE" (state-path "voice-level")))
+(defparameter *pid-file* (env "MYNAH_PID_FILE" (state-path "speakd.pid")))
+
+(defun log-line (fmt &rest args) (format t "~&companion: ~?~%" fmt args) (finish-output))
+(defun prefix-p (prefix s) (and (>= (length s) (length prefix)) (string= prefix s :end2 (length prefix))))
+
+(defun first-line (path)
+  (ignore-errors (with-open-file (in path :external-format :utf-8)
+                   (string-trim '(#\Space #\Tab #\Return) (or (read-line in nil) "")))))
+
+(defun now ()
+  (multiple-value-bind (sec usec) (sb-ext:get-time-of-day) (+ sec (/ usec 1d6))))
+
+(defun read-level ()
+  "The voice-level file is \"<rms> <unix time>\"; 0 when missing or older than 0.35 s."
+  (or (ignore-errors
+       (let* ((s (first-line *level-file*)) (sp (position #\Space s))
+              (*read-default-float-format* 'double-float)
+              (rms (read-from-string (subseq s 0 sp))) (ts (read-from-string (subseq s (1+ sp)))))
+         (and (realp rms) (realp ts) (< (- (now) ts) 0.35) rms)))
+      0))
+
+(defun alive-p ()
+  (let* ((s (first-line *pid-file*)) (pid (and s (ignore-errors (parse-integer s)))))
+    (and pid (ignore-errors (zerop (sb-posix:kill pid 0))))))
+
+(defun valid-state-p (s) (and s (plusp (length s)) (every (lambda (c) (or (alpha-char-p c) (char= c #\-))) s)))
+
+(defun api-state ()
+  (let* ((alive (alive-p))
+         (st (first-line *state-file*))
+         (state (if (and alive (valid-state-p st)) st "off"))
+         (level (read-level)))
+    (format nil "{\"state\":\"~a\",\"level\":~,4f,\"alive\":~a}" state (min 1 level) (if alive "true" "false"))))
+
+(defun read-line-bytes (stream)
+  (string-right-trim '(#\Return)
+                     (map 'string #'code-char
+                          (loop for b = (read-byte stream nil) until (or (null b) (= b 10)) collect b))))
+
+(defun send (stream status type body)
+  (let ((bytes (if (stringp body) (sb-ext:string-to-octets body :external-format :utf-8) body)))
+    (write-sequence (sb-ext:string-to-octets
+                     (format nil "HTTP/1.0 ~a~c~cContent-Type: ~a~c~cContent-Length: ~d~c~cCache-Control: no-store~c~c~c~c"
+                             status #\Return #\Newline type #\Return #\Newline (length bytes) #\Return #\Newline
+                             #\Return #\Newline #\Return #\Newline))
+                    stream)
+    (write-sequence bytes stream)
+    (finish-output stream)))
+
+(defun file-bytes (p)
+  (with-open-file (in p :element-type '(unsigned-byte 8))
+    (let ((v (make-array (file-length in) :element-type '(unsigned-byte 8)))) (read-sequence v in) v)))
+
+(defun handle (stream)
+  (let* ((line (read-line-bytes stream))
+         (sp (position #\Space line))
+         (path (if sp (subseq line (1+ sp) (position #\Space line :start (1+ sp))) "/")))
+    (loop for h = (read-line-bytes stream) until (string= h ""))
+    (cond ((prefix-p "/health" path) (send stream "200 OK" "text/plain" "ok"))
+          ((prefix-p "/api/s" path) (send stream "200 OK" "application/json" (api-state)))
+          (t (send stream "200 OK" "text/html; charset=utf-8" (file-bytes (merge-pathnames "index.html" *dir*)))))))
+
+(defun listener (port)
+  (let ((sock (make-instance 'inet-socket :type :stream :protocol :tcp)))
+    (setf (sockopt-reuse-address sock) t)
+    (unwind-protect
+         (progn
+           (socket-bind sock #(127 0 0 1) port)
+           (socket-listen sock 64)
+           (log-line "Bolt on http://127.0.0.1:~d/" port)
+           (loop
+             (let ((client (socket-accept sock)))
+               (sb-thread:make-thread
+                (lambda ()
+                  (unwind-protect
+                       (handler-case
+                           (handle (socket-make-stream client :input t :output t
+                                                              :element-type '(unsigned-byte 8) :buffering :full))
+                         (error (e) (log-line "request error: ~a" e)))
+                    (socket-close client)))))))
+      (socket-close sock))))
+
+(let ((port (parse-integer (or (second sb-ext:*posix-argv*) "8860"))))
+  (loop (handler-case (listener port)
+          (error (e) (log-line "listener crashed: ~a" e) (sleep 1)))))

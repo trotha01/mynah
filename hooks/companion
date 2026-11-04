@@ -1,0 +1,22 @@
+#!/bin/zsh
+# Bolt, the voice-mode companion (see ../companion/). Read-only: never touches the voice-mode switch.
+#   companion start   run the page server on 127.0.0.1:8860 if it is not running
+#   companion open    start, then show Bolt in the Jmacs web view (jmacs open)
+#   companion split   start, then open Bolt in a new pane beside the focused one (jmacs split h)
+#   companion stop
+here=${0:A:h}; port=${COMPANION_PORT:-8860}; url=http://127.0.0.1:$port/
+up() { curl -fs -m 1 ${url}health >/dev/null 2>&1 }
+start() {
+  up && return
+  mkdir -p ~/.local/state/mynah
+  nohup sbcl --script $here/../companion/companion.lisp $port >> ~/.local/state/mynah/companion.log 2>&1 &
+  for i in {1..30}; do up && return; sleep 0.2; done
+  echo "companion did not start; see ~/.local/state/mynah/companion.log" >&2; exit 1
+}
+case ${1:-open} in
+  start) start ;;
+  open) start; jmacs open $url ;;
+  split) start; jmacs split h $url ;;
+  stop) pkill -f "companion.lisp $port" ;;
+  *) echo "usage: companion start|open|split|stop" >&2; exit 2 ;;
+esac

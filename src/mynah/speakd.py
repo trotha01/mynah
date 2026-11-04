@@ -68,6 +68,26 @@ def refresh_audio_devices():
         logger.warning(f"Could not refresh audio device list: {e}")
 
 
+LEVEL_FILE = Path(os.getenv("MYNAH_LEVEL_FILE", str(Path.home() / ".local/state/mynah/voice-level")))
+_level_at = 0.0
+
+
+def write_level(block):
+    """Publish the RMS of the block being played (for the Jmacs companion's mouth; companion/companion.lisp
+    reads it). At most every 30 ms; the file is "<rms> <unix time>"; a missing or old one means silence. Never raises."""
+    global _level_at
+    now = time.monotonic()
+    if now - _level_at < 0.03:
+        return
+    _level_at = now
+    try:
+        LEVEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        rms = float((block.astype("float32") ** 2).mean() ** 0.5)
+        LEVEL_FILE.write_text(f"{rms:.4f} {time.time():.3f}\n")
+    except Exception:
+        pass
+
+
 def tapped_player_class():
     """AudioPlayer that also hands every block it plays to the echo gate (listen.Listener.gate)."""
     from mlx_audio.tts.audio_player import AudioPlayer
@@ -81,6 +101,7 @@ def tapped_player_class():
             finally:  # also when the last block ends the stream (CallbackStop)
                 if self.tap is not None:
                     self.tap(outdata[:, 0])
+                write_level(outdata[:, 0])
     return TappedPlayer
 
 

@@ -19,7 +19,7 @@ body{background:#f4efe6;color:#3a2f2a;font:13px -apple-system,system-ui,sans-ser
 #lyr .ln.a .w.f{opacity:.55}
 #lyr .w.on{background:var(--hl,#3a2f2a);color:var(--hlt,#f4efe6);opacity:1}
 #badge{position:fixed;top:8px;left:8px;padding:5px 11px;border-radius:14px;font:600 13px system-ui,sans-serif;color:#fff;background:#2e8b57;z-index:9}
-#badge[data-k=paused]{background:#c77d0a}#badge[data-k=speaking]{background:#2f6fb5}#badge[data-k=off]{background:#6b6b6b}#badge[data-k=muted]{background:#d32f2f;font-size:15px}
+#badge[data-k=paused],#badge[data-k=loading]{background:#c77d0a}#badge[data-k=speaking]{background:#2f6fb5}#badge[data-k=off]{background:#6b6b6b}#badge[data-k=muted]{background:#d32f2f;font-size:15px}
 body.muted::after{content:"";position:fixed;inset:0;border:6px solid #d32f2f;pointer-events:none;z-index:8}
 </style></head><body>
 <div id="stage"></div>
@@ -53,9 +53,9 @@ function showNote(n){   // a worker session changed status (the server also spea
 const bd=document.getElementById('badge');
 function badge(s){
   const muted=s==='muted'||s.endsWith('-muted');
-  const kind=s==='off'?'off':muted?'muted':s==='paused'?'paused':(s.startsWith('speaking')?'speaking':'listening');
-  const txt={off:'VOICE OFF',muted:'MUTED - not listening',paused:'PAUSED - tap Right Command',speaking:'SPEAKING',listening:'LISTENING'}[kind];
-  const ic={off:'\u{1F634}',muted:'\u{1F507}',paused:'\u23F8',speaking:'\u{1F50A}',listening:'\u{1F3A4}'}[kind];
+  const kind=s==='off'?'off':s==='loading'?'loading':muted?'muted':s==='paused'?'paused':(s.startsWith('speaking')?'speaking':'listening');
+  const txt={off:'VOICE OFF',muted:'MUTED - not listening',paused:'PAUSED - tap Right Command',loading:'WAKING UP...',speaking:'SPEAKING',listening:'LISTENING'}[kind];
+  const ic={off:'\u{1F634}',muted:'\u{1F507}',paused:'\u23F8',loading:'\u23F3',speaking:'\u{1F50A}',listening:'\u{1F3A4}'}[kind];
   if(bd.dataset.k!==kind){bd.dataset.k=kind;bd.textContent=ic+' '+txt;document.body.classList.toggle('muted',kind==='muted')}
 }
 

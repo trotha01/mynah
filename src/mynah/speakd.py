@@ -35,7 +35,7 @@ SPEED = float(os.getenv("MYNAH_SPEED", "1.0"))
 MAX_CHARS = int(os.getenv("MYNAH_MAX_CHARS", "700"))
 INBOX = Path(os.getenv("MYNAH_INBOX", str(Path.home() / ".local/state/mynah/inbox")))
 PIDFILE = INBOX.parent / "speakd.pid"  # hooks/claude-speak checks it to start this process on demand
-IDLE_EXIT_SECONDS = int(os.getenv("MYNAH_IDLE_EXIT", "7200"))  # frees the model's memory when unused
+SLEEP_AFTER_SECONDS = int(os.getenv("MYNAH_SLEEP_AFTER", "300"))  # voice mode off and nothing to say for this long: unload the models (see sleep_main)
 STALE_SECONDS = 120
 POLL_SECONDS = 0.1
 # Hold-to-talk: Parakeet Dictation's push-to-talk key (its saved setting) stops the speech.
@@ -422,6 +422,29 @@ def drain_inbox(speaker, quiet=False):
 
 
 RESUME_GRACE_SECONDS = float(os.getenv("MYNAH_RESUME_GRACE", "2.5"))   # after a resume the mic hears nothing for this long
+def toggle_voice_mode(listener):
+    """Tap of the push-to-talk key (Right Option): switch voice mode off if it is on, on if it is off. The mode is the file
+    listen.MODE_FILE (hooks/voice-mode does the same with `on` / `off`); the listener running in this process sees the file
+    change, announces it and opens or closes the microphone. Trevor pressed the key, so this is the one place besides
+    `voice-mode on --yes` where the mode is turned on; the log line says which key did it."""
+    from .listen import MODE_FILE
+    on = mode_on()
+    try:
+        log = Path(os.getenv("MYNAH_VOICE_MODE_LOG", str(Path.home() / ".local/state/mynah/voice-mode.log")))
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as f:
+            f.write(f"{time.strftime('%F %T')} {'off' if on else 'on'} source=right-option-tap\n")
+        if on:
+            MODE_FILE.unlink(missing_ok=True)
+        else:
+            listener.muted = False          # an old mute must not survive into the new session
+            MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MODE_FILE.touch()
+        logger.info(f"Key tap: voice mode {'off' if on else 'on'}")
+    except OSError as e:
+        logger.error(f"Key tap could not switch voice mode: {e}")
+
+
 TAP_SECONDS = 0.5   # a press shorter than this is a tap (mute toggle); longer is hold-to-talk
 
 
@@ -438,7 +461,70 @@ def wire_model_memory():
         logger.warning(f"Could not set the MLX wired limit: {e}")
 
 
+def _reexec(*args):
+    """Replace this process with a fresh `python -m mynah.speakd` (same pid, same desktop session, so the key watcher keeps
+    working). This is how the models are unloaded (sleep) and loaded again (wake): a new process image frees all of the old one."""
+    logging.shutdown()
+    os.execv(sys.executable, [sys.executable, "-m", "mynah.speakd", *args])
+
+
+def write_state(state):
+    from .listen import STATE_FILE
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(state + "\n")
+    except OSError:
+        pass
+
+
+def sleep_main():
+    """Voice mode is off and has been for a while: hold no models (about 3.6 GB went back to the system) and only watch the
+    push-to-talk key and the inbox. A tap of the key turns voice mode on and loads everything again (J shows "waking up"
+    while it does); so does a reply arriving for the speaker, or `voice-mode on`."""
+    INBOX.mkdir(parents=True, exist_ok=True)
+    PIDFILE.write_text(str(os.getpid()))
+    write_state("off")
+    try:
+        hold = HoldToTalk()
+    except Exception as e:
+        logger.warning(f"Push-to-talk key unavailable while asleep: {e}")
+        hold = None
+    logger.info(f"Asleep: no models loaded; a tap of the push-to-talk key, a reply or `voice-mode on` wakes it ({os.getpid()})")
+    was_held, press_at = False, 0.0
+    while True:
+        try:
+            held = hold is not None and hold.held()
+            if held and not was_held:
+                press_at = time.time()
+            if was_held and not held and time.time() - press_at < TAP_SECONDS:
+                wake(key=True)
+            was_held = held
+            if mode_on() or any(p.suffix in (".say", ".stop") for p in INBOX.glob("*")):
+                wake()
+        except Exception as e:
+            logger.error(f"Error while asleep: {e}")
+        time.sleep(POLL_SECONDS)
+
+
+def wake(key=False):
+    from .listen import MODE_FILE
+    write_state("loading")           # J shows "waking up..." from this moment until the listener is ready
+    if key:
+        try:
+            log = Path(os.getenv("MYNAH_VOICE_MODE_LOG", str(Path.home() / ".local/state/mynah/voice-mode.log")))
+            with log.open("a") as f:
+                f.write(f"{time.strftime('%F %T')} on source=right-option-tap (wake)\n")
+            MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MODE_FILE.touch()
+        except OSError as e:
+            logger.error(f"Key tap could not switch voice mode on: {e}")
+    logger.info("Waking up: loading the models" + (" (voice mode on by key tap)" if key else ""))
+    _reexec()
+
+
 def main():
+    if "--sleep" in sys.argv:
+        return sleep_main()
     INBOX.mkdir(parents=True, exist_ok=True)
     wire_model_memory()
     # The hook starts this process when it is not running and drops the reply that triggered the start in
@@ -450,6 +536,8 @@ def main():
     except (OSError, ValueError):
         pass
     PIDFILE.write_text(str(os.getpid()))
+    if mode_on():
+        write_state("loading")       # J: "waking up..." while the models load
     speaker = Speaker()
     speaker.warm_up()
     signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
@@ -474,10 +562,11 @@ def main():
     while True:
         if mode_on() or any(p.suffix in (".say", ".stop") for p in INBOX.glob("*")):
             last_activity = time.time()
-        elif time.time() - last_activity > IDLE_EXIT_SECONDS:
-            logger.info("Idle; exiting (the next reply starts it again)")
-            PIDFILE.unlink(missing_ok=True)
-            return
+        elif time.time() - last_activity > SLEEP_AFTER_SECONDS:
+            logger.info("Idle with voice mode off: unloading the models (a key tap, a reply or `voice-mode on` loads them again)")
+            speaker.stop()
+            listener.release_mic()
+            _reexec("--sleep")
         try:  # one bad iteration must not end the process: the hook only restarts it at the next reply
             held = hold is not None and hold.held()
             if held and not was_held:
@@ -485,8 +574,8 @@ def main():
                 spoke = bool(speaker.speaking)
                 speaker.stop()
                 logger.info("Push-to-talk key down: stopped speaking")
-            if was_held and not held and not spoke and time.time() - press_at < TAP_SECONDS and mode_on():
-                listener.set_muted(not listener.muted)   # a short tap with nothing playing: mute / unmute
+            if was_held and not held and not spoke and time.time() - press_at < TAP_SECONDS:
+                toggle_voice_mode(listener)   # a short tap with nothing playing: voice mode off / on
             was_held = held
             if pause_key is not None and pause_key.poll() and not held:
                 if speaker.paused:

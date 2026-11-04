@@ -59,3 +59,64 @@ def test_resume_makes_the_listener_deaf_for_a_moment():
     sp.listener = SimpleNamespace(deaf_until=0.0)
     assert sp.set_paused(False) and not sp.player.paused
     assert sp.listener.deaf_until > time.time() + 1.0
+
+
+def test_right_option_tap_toggles_the_voice_mode_file(tmp_path, monkeypatch=None):
+    import os
+    from types import SimpleNamespace
+    from mynah import listen
+    old, oldlog = listen.MODE_FILE, os.environ.get("MYNAH_VOICE_MODE_LOG")
+    listen.MODE_FILE = tmp_path / "cfg" / "voice-conversation"
+    os.environ["MYNAH_VOICE_MODE_LOG"] = str(tmp_path / "mode.log")
+    try:
+        lis = SimpleNamespace(muted=True)
+        speakd.toggle_voice_mode(lis)
+        assert listen.MODE_FILE.exists() and lis.muted is False       # off -> on, old mute cleared
+        speakd.toggle_voice_mode(lis)
+        assert not listen.MODE_FILE.exists()                          # on -> off
+        assert (tmp_path / "mode.log").read_text().count("source=right-option-tap") == 2
+    finally:
+        listen.MODE_FILE = old
+        if oldlog is None:
+            os.environ.pop("MYNAH_VOICE_MODE_LOG", None)
+        else:
+            os.environ["MYNAH_VOICE_MODE_LOG"] = oldlog
+
+
+def test_sleeping_speaker_wakes_on_a_key_tap_a_reply_or_the_mode_file(tmp_path):
+    import os
+    from mynah import listen
+    class Woke(BaseException):
+        pass
+    saved = (speakd.INBOX, speakd.PIDFILE, speakd._reexec, speakd.HoldToTalk, listen.MODE_FILE, listen.STATE_FILE, speakd.POLL_SECONDS)
+    os.environ["MYNAH_VOICE_MODE_LOG"] = str(tmp_path / "mode.log")
+    try:
+        speakd.INBOX, speakd.PIDFILE = tmp_path / "inbox", tmp_path / "speakd.pid"
+        listen.MODE_FILE, listen.STATE_FILE = tmp_path / "mode", tmp_path / "state"
+        speakd.POLL_SECONDS = 0.001
+        def boom(*a):
+            raise Woke(a)
+        speakd._reexec = boom
+        # 1. a reply in the inbox wakes it without touching the mode
+        speakd.INBOX.mkdir()
+        (speakd.INBOX / "1.say").write_text("hi")
+        try:
+            speakd.sleep_main(); assert False
+        except Woke as w:
+            assert w.args[0] == () and not listen.MODE_FILE.exists()
+        assert listen.STATE_FILE.read_text().strip() == "loading"          # J shows "waking up"
+        (speakd.INBOX / "1.say").unlink()
+        # 2. a clean tap of the key turns voice mode on and wakes
+        seq = iter([False, True, True, False] + [False] * 50)
+        class Key:
+            def held(self): return next(seq)
+        speakd.HoldToTalk = Key
+        try:
+            speakd.sleep_main(); assert False
+        except Woke:
+            pass
+        assert listen.MODE_FILE.exists()
+        assert "right-option-tap (wake)" in (tmp_path / "mode.log").read_text()
+    finally:
+        speakd.INBOX, speakd.PIDFILE, speakd._reexec, speakd.HoldToTalk, listen.MODE_FILE, listen.STATE_FILE, speakd.POLL_SECONDS = saved
+        os.environ.pop("MYNAH_VOICE_MODE_LOG", None)

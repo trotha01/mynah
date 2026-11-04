@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 from .aec import EchoCanceller
+from . import noisepause
 
 logger = logging.getLogger("mynah.listen")
 
@@ -269,6 +270,8 @@ class Listener(threading.Thread):
         self.was_speaking = False
         self.deaf_until = 0.0
         self.mic_not_before = 0.0     # half-duplex: the mic stays shut a moment after a reply ends
+        self.gate = None             # noisepause.NoiseGate: set per mode switch-on (apply_settings)
+        self.noise_pause = noisepause.NOISE_PAUSE
         self.active = time.time()     # last moment the mode was on; speakd uses it to stay alive
 
     # ---- state shown by `hooks/voice-mode status`
@@ -470,8 +473,38 @@ class Listener(threading.Thread):
             logger.warning(f"Bad setting in {MODE_FILE}: {e}; using defaults")
             self.min_level_db, self.endpointer = MIN_LEVEL_DB, Endpointer()
         self.barge_in = cfg.get("barge_in") or os.getenv("MYNAH_BARGE_IN")
+        self.noise_pause = cfg.get("noise_pause", "on" if noisepause.NOISE_PAUSE else "off").lower() not in ("off", "0", "false", "no")
+        try:
+            self.noise_cfg = dict(noise_db=float(cfg.get("noise_db", noisepause.NOISE_DB)),
+                                  quiet=float(cfg.get("noise_quiet", noisepause.NOISE_QUIET)))
+        except ValueError as e:
+            logger.warning(f"Bad noise setting: {e}; using defaults")
+            self.noise_cfg = {}
+        self.make_gate()
         logger.info(f"Settings: min level {self.min_level_db:.0f} dBFS, silence {self.endpointer.silence_frames * FRAME_SECONDS:.2f}s, "
                     f"barge-in {self.barge_in or 'auto'}")
+
+    noise_cfg = {}
+
+    def make_gate(self):
+        enrolled = bool(self.speaker_check and self.verifier is not None and self.verifier.enrolled)
+        self.gate = noisepause.NoiseGate(classify=self.classify_noise if self.speaker_check else None,
+                                         has_profile=enrolled, **self.noise_cfg)
+
+    def classify_noise(self, audio):
+        """For the noise gate: is this Trevor? True / False, or None when there is no voice profile."""
+        if self.verifier is None:
+            from .speaker_id import SpeakerVerifier
+            self.verifier = SpeakerVerifier()
+        if not self.verifier.enrolled:
+            return None
+        if self.verifier.encoder is None:
+            self.verifier._load()
+        score = self.verifier.score(audio[-int(6 * SAMPLE_RATE):])
+        ok = score >= self.speaker_threshold
+        logger.info(f"Noise pause: voice match {score:.2f} (threshold {self.speaker_threshold:.2f}): "
+                    + ("Trevor" if ok else "someone else"))
+        return ok
 
     def turn_on(self):
         self.apply_settings()
@@ -505,8 +538,10 @@ class Listener(threading.Thread):
         self.set_state("speaking" if self.speaker.speaking else self.idle_state)
 
     def mic_wanted(self, speaking):
-        if self.muted or getattr(self.speaker, "paused", False):   # paused: Trevor is talking to the room
+        if self.muted:
             return False
+        if getattr(self.speaker, "paused", False) and not getattr(self.speaker, "auto_paused", False):
+            return False        # manual pause: Trevor is talking to the room. An automatic (noise) pause keeps the mic open
         if self.suspended():
             return False
         if speaking and (self.half_duplex is not False):   # undecided counts as shut
@@ -559,6 +594,38 @@ class Listener(threading.Thread):
                         f"(barge needs {BARGE_THRESHOLD}), peak level {d['level']:.0f} dBFS, "
                         f"slowest VAD {d['vad_ms']:.0f} ms, max lag behind the mic {d['lag_ms']:.0f} ms")
 
+    def gate_active(self):
+        """The noise gate replaces the old stop-on-speech barge-in while a reply plays with the microphone open."""
+        return (self.noise_pause and self.gate is not None and self.mode in ("echo", "voice")
+                and not self.endpointer.in_speech)
+
+    def noise_step(self, t, frame, prob):
+        action = self.gate.push(t, frame, prob)
+        if self.gate.note:
+            logger.info(f"Noise pause has lasted {noisepause.NOISE_NOTE_AFTER / 60:.0f} minutes: the room is still noisy")
+        if action == "pause":
+            logger.info(f"Noise: pausing the reply (level {level_db(frame):.0f} dBFS, voice prob {prob:.2f}), microphone stays open")
+            if self.speaker.set_paused(True, auto=True):
+                self.set_state("paused-noise")
+            else:
+                self.gate.reset()
+        elif action == "resume":
+            logger.info("Quiet again: resuming the reply")
+            self.speaker.set_paused(False)
+            self.set_state("speaking")
+        elif action == "barge":
+            g = self.gate
+            logger.info("Barge-in: " + ("Trevor's voice" if g.last_verdict else "a spoken command") + " heard while paused, stopping the reply")
+            audio = g.audio()
+            self.speaker.stop()
+            ep = self.endpointer
+            ep.reset()
+            ep.in_speech, ep.frames = True, [audio[i:i + FRAME] for i in range(0, len(audio), FRAME)]
+            ep.speech_frames = max(g.voice_frames, ep.min_speech_frames)
+            ep.silence = min(int((t - g.t_noisy) / FRAME_SECONDS), ep.silence_frames - 1)
+            g.reset()
+            self.set_state("hearing")
+
     def step(self):
         speaking = bool(self.speaker.speaking)
         if speaking and self.half_duplex is None and getattr(self.speaker, "player", None) is not None:
@@ -571,6 +638,8 @@ class Listener(threading.Thread):
                 self.idle_state = "listening"
             self.half_duplex = self.mode = None
         self.was_speaking = speaking
+        if self.gate is not None and self.gate.paused and not getattr(self.speaker, "auto_paused", False):
+            self.gate.reset()      # the reply ended, was stopped, or a key tap resumed it: the automatic pause is over
         if not self.mic_wanted(speaking):
             self.release_mic()
             self.set_state("paused" if getattr(self.speaker, "paused", False) else "speaking" if speaking else self.idle_state)
@@ -603,6 +672,9 @@ class Listener(threading.Thread):
             d["lag_ms"] = max(d["lag_ms"], (time.perf_counter() - t) * 1000)
             d["prob"] = max(d["prob"], prob)
             d["level"] = max(d["level"], level_db(frame))
+        if speaking and self.gate_active():
+            self.noise_step(t, frame, prob)
+            return
         for kind, payload in self.endpointer.push(frame, prob, speaking):
             if kind == "start":
                 if payload:

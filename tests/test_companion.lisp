@@ -1,0 +1,23 @@
+;;;; Announcement rules of companion/companion.lisp. Run: COMPANION_NO_SERVE=1 sbcl --script tests/test_companion.lisp
+(load (merge-pathnames "../companion/companion.lisp" *load-truename*))
+(in-package :companion)
+(defvar *fail* 0)
+(defun check (name ok) (format t "~a ~a~%" (if ok "ok  " "FAIL") name) (unless ok (incf *fail*)))
+(defun reset () (clrhash *seen*) (clrhash *last-said*) (setf *pending* nil *note* nil *baseline* nil))
+(defun after-tag (tag) ; worker w1 was running, then gets TAG
+  (reset)
+  (detect-changes (list (list "right:w" "running" "t1" "Guadalupe animation")))
+  (detect-changes (list (list "right:w" tag "t2" "Guadalupe animation"))))
+;; mode file present so speech is queued
+(let ((f "/tmp/companion-test-mode")) (with-open-file (o f :direction :output :if-exists :supersede) (write-line "" o))
+  (setf *mode-file* f))
+(dolist (c '(("waiting" nil nil) ("needs_you" "Guadalupe animation needs permission" t)
+             ("blocked" "Guadalupe animation is blocked" t) ("done" "Guadalupe animation is done" t)))
+  (after-tag (first c))
+  (format t "~a -> note=~s pending=~s~%" (first c) (and *note* (second *note*)) (mapcar #'first *pending*))
+  (check (format nil "~a note" (first c)) (equal (and *note* (second *note*)) (second c)))
+  (check (format nil "~a speech queued" (first c)) (eq (and *pending* t) (third c))))
+(setf *pending* '(("C" "done" 0) ("B" "needs_you" 0) ("A" "needs_you" 0)))
+(format t "compose: ~a~%" (compose *pending*))
+(check "compose" (equal (compose *pending*) "A and B need permission. C is done."))
+(sb-ext:exit :code (if (zerop *fail*) 0 1))

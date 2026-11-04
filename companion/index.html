@@ -129,7 +129,7 @@ function demoWords(){   // ?demo=speaking fakes a reply being spoken: 0.33 s per
   return out;
 }
 if(demo){window.fetch=()=>Promise.resolve({json:()=>Promise.resolve({state:demo,q:qs.get('q')==='1',
-  note:demoNote?{n:1,age:0,kind:demoNote,text:{waiting:'Saint videos is waiting for you',needs_you:'Saint videos needs you',done:'Saint videos is done',blocked:'Saint videos is blocked'}[demoNote]}:null,
+  note:demoNote?{n:1,age:0,kind:demoNote,text:{needs_you:'Saint videos needs permission',done:'Saint videos is done',blocked:'Saint videos is blocked'}[demoNote]}:null,
   vis:demo==='speaking'&&qs.get('karaoke')!=='0'?{w:Date.now()/1000,ev:[],wd:demoWords()}:null,
   level:demo==='speaking'?(Math.sin(Date.now()/130)>-.3?0.03+Math.random()*0.17*(Math.sin(Date.now()/1700)>.5?1.6:1):0):0})})}
 </script></body></html>

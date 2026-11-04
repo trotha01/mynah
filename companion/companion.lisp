@@ -8,8 +8,12 @@
 ;;;; waiting speaking); level = RMS of the audio speakd is playing right now
 ;;;; (voice-level, 0 when stale). Read-only: it never touches the voice-mode switch.
 ;;;; Worker announcements: a background thread polls todoview (the todo list page, GET /api/items) for workers whose
-;;;; status tag changes to waiting / done / needs_you / blocked, and shows each as a note on /api/s ("note":{n,text,kind,age}).
-;;;; With voice mode on it also speaks one short line ("Saint videos is waiting for you") by writing a .say file into the
+;;;; status tag changes to needs_you / blocked / done, and shows each as a note on /api/s ("note":{n,text,kind,age}).
+;;;; A plain "waiting" tag (the worker's turn ended, set by the Stop hook after EVERY turn) is never announced: no note, no
+;;;; speech. Announced: needs_you = a permission prompt is waiting ("X needs permission"), blocked = the worker reported it
+;;;; is stuck on Trevor ("X is blocked"), done ("X is done"). "Turn ended with a question" is NOT announced: the todo-hook
+;;;; does not record the last message, so no reliable signal exists. Worker message text is never read aloud.
+;;;; With voice mode on it also speaks one short line ("Saint videos needs permission") by writing a .say file into the
 ;;;; speaker's inbox, but only when nothing else is going on: state listening for 2.5 s, no level, nothing queued in the
 ;;;; inbox, 3 s since the last announcement. Pending lines are grouped, dropped after 90 s, and never queued while voice
 ;;;; mode is off. Debounce: the same worker and tag within 90 s is ignored; the orchestrator (win "left...") is skipped.
@@ -84,7 +88,7 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
 
 ;;; Worker announcements
 
-(defparameter *announce-tags* '("waiting" "done" "needs_you" "blocked"))
+(defparameter *announce-tags* '("done" "needs_you" "blocked"))
 (defvar *seen* (make-hash-table :test 'equal))      ; win -> (tag . updated)
 (defvar *last-said* (make-hash-table :test 'equal)) ; (win . tag) -> unix time (debounce)
 (defvar *baseline* t)                               ; the first poll only records, it never announces
@@ -114,14 +118,13 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
            when (= (length f) 4) collect f))))
 
 (defun announce-line (name kind)
-  (cond ((string= kind "waiting") (format nil "~a is waiting for you" name))
-        ((string= kind "needs_you") (format nil "~a needs you" name))
+  (cond ((string= kind "needs_you") (format nil "~a needs permission" name))
         ((string= kind "done") (format nil "~a is done" name))
         (t (format nil "~a is blocked" name))))
 
 (defun announce-many (names kind)
-  "NAMES (2 or more) in one line: \"A and B are waiting for you\"."
-  (let ((tail (cond ((string= kind "waiting") "are waiting for you") ((string= kind "needs_you") "need you")
+  "NAMES (2 or more) in one line: \"A and B need permission\"."
+  (let ((tail (cond ((string= kind "needs_you") "need permission")
                     ((string= kind "done") "are done") (t "are blocked"))))
     (if (<= (length names) 3)
         (format nil "~{~a~^, ~} and ~a ~a" (butlast names) (car (last names)) tail)
@@ -152,9 +155,9 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
                        (directory (merge-pathnames "*.*" (concatenate 'string (string-right-trim "/" *inbox*) "/"))))))
 
 (defun compose (items)
-  "One short spoken line: workers grouped by what they need (\"A and B are waiting for you. C is done\")."
+  "One short spoken line: workers grouped by what they need (\"A and B need permission. C is done\")."
   (let ((parts nil))
-    (dolist (kind '("needs_you" "waiting" "blocked" "done"))
+    (dolist (kind '("needs_you" "blocked" "done"))
       (let ((names (reverse (loop for (n k) in items when (string= k kind) collect n))))
         (when names
           (push (if (= (length names) 1) (announce-line (first names) kind) (announce-many names kind)) parts))))
@@ -244,8 +247,9 @@ mode on, a bad read keeps the last good state and a missing speaker means it is 
                     (socket-close client)))))))
       (socket-close sock))))
 
+(unless (sb-posix:getenv "COMPANION_NO_SERVE")  ; tests/test_companion.lisp loads this file without serving
 (sb-thread:make-thread #'watcher :name "watcher")
 
 (let ((port (parse-integer (or (second sb-ext:*posix-argv*) "8860"))))
   (loop (handler-case (listener port)
-          (error (e) (log-line "listener crashed: ~a" e) (sleep 1)))))
+          (error (e) (log-line "listener crashed: ~a" e) (sleep 1))))))

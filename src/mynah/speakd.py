@@ -24,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import lipsync, viseme
+from . import audiowatch, lipsync, viseme
 from .listen import Listener, mode_on
 from .transcript import strip_markdown_for_speech
 
@@ -63,8 +63,9 @@ def refresh_audio_devices():
     """PortAudio snapshots the device list once and misses Bluetooth reconnects (see main.py)."""
     import sounddevice as sd
     try:
-        sd._terminate()
-        sd._initialize()
+        with audiowatch.audio_lock("refresh_audio_devices"):   # never under another thread's stream stop / mic open
+            sd._terminate()
+            sd._initialize()
     except Exception as e:
         logger.warning(f"Could not refresh audio device list: {e}")
 
@@ -160,8 +161,8 @@ class Speaker:
         logger.info(f"Loading {MODEL_ID}...")
         self.model = load_model(MODEL_ID)
         self.lock = threading.Lock()      # guards token and player
-        self.run_lock = threading.Lock()  # one generation at a time
-        self.close_lock = threading.Lock()  # AudioPlayer.stop_stream is not thread-safe (see _close)
+        self.run_lock = audiowatch.HoldClock()  # one generation at a time (the watchdog reads how long it has been held)
+        self.close_lock = audiowatch.AUDIO_LOCK  # AudioPlayer.stop_stream is not thread-safe (see _close); also guards refresh/mic
         self.token = 0                    # bumped by every say/stop; a stale _speak stops itself
         self.player = None
         self.speaking = False             # a reply is queued or playing (the listener reads it)
@@ -238,17 +239,19 @@ class Speaker:
         """Drop what is buffered and close the stream. An interrupt and the end of the speech both do this
         from different threads, and racing in stop_stream (one sets stream to None between the other's stop
         and close) crashed the process."""
-        with self.close_lock:
-            try:
+        try:
+            with audiowatch.audio_lock("close"):
+                if getattr(player, "_mynah_closed", False):
+                    return   # the other of stop() / end of speech got here first: never stop a stream twice
+                player._mynah_closed = True
                 lip = getattr(player, "lipsync", None)
                 if lip is not None:
                     lip.stop()   # the audio is cut: the mouth must stop with it
-                player.flush()
-                player.stop_stream()
+                audiowatch.timed_stop(player)   # flush + stop_stream, bounded: a CoreAudio wedge restarts speakd
                 if lip is not None:
                     lip.stop()   # a last callback may have run in between
-            except Exception as e:
-                logger.warning(f"Closing the audio stream failed: {e}")
+        except Exception as e:
+            logger.warning(f"Closing the audio stream failed: {e}")
 
     def say(self, text):
         self.stop()
@@ -274,7 +277,7 @@ class Speaker:
             if self.listener is not None:
                 self.listener.release_mic()  # PortAudio cannot be re-initialised under an open input stream
             refresh_audio_devices()
-            player = tapped_player_class()(sample_rate=self.model.sample_rate)
+            player = audiowatch.locked_call("open", lambda: tapped_player_class()(sample_rate=self.model.sample_rate))
             if self.listener is not None:
                 player.tap = self.listener.aec.tap
                 self.listener.aec.reset_reference()
@@ -461,6 +464,26 @@ def wire_model_memory():
         logger.warning(f"Could not set the MLX wired limit: {e}")
 
 
+def _restart_after_wedge(reason):
+    """audiowatch.WEDGE.restart: replace this process with a fresh speakd. The applet only runs `do shell script ... &`
+    and exits, so speakd has no live parent (launchd adopts it); exec keeps the pid and the desktop session, and there
+    is nothing to orphan. The pid file holds our own pid, which the new image would read as "Already running": drop it.
+    If exec itself hangs, a detached shell kills this pid and starts the speaker the way `claude-speak Start` does."""
+    PIDFILE.unlink(missing_ok=True)
+    write_state("loading")
+    app = os.getenv("MYNAH_SPEAKER_APP", str(Path.home() / ".local/share/mynah/Mynah Speaker.app"))
+    python = Path.home() / ".local/share/uv/tools/mynah/bin/python"
+    cmd = audiowatch.fallback_command(os.getpid(), app, os.getenv("MYNAH_PYTHON", str(python)))
+    def last_resort():
+        logger.error("exec did not replace the process: killing it from a detached shell and starting it again")
+        subprocess.Popen(["/bin/sh", "-c", cmd], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    timer = threading.Timer(audiowatch.KILL_FALLBACK_SECONDS - 1, last_resort)
+    timer.daemon = True
+    timer.start()
+    _reexec()
+
+
 def _reexec(*args):
     """Replace this process with a fresh `python -m mynah.speakd` (same pid, same desktop session, so the key watcher keeps
     working). This is how the models are unloaded (sleep) and loaded again (wake): a new process image frees all of the old one."""
@@ -554,7 +577,12 @@ def main():
         pause_key = None
     listener = Listener(speaker, suspended=(hold.held if hold is not None else (lambda: False)))
     speaker.listener = listener
+    # Wedge recovery (src/mynah/audiowatch.py): timed stream stop, one lock for PortAudio, a watchdog on the inbox.
+    audiowatch.WEDGE.configure(restart=_restart_after_wedge, state_dir=INBOX.parent)
+    listener.open_mic = audiowatch.serialized(listener.open_mic, "open_mic")
+    listener.release_mic = audiowatch.serialized(listener.release_mic, "release_mic")
     listener.start()  # idle (no microphone, no models) until ~/.config/jmacs/voice-conversation exists
+    audiowatch.Watchdog(speaker, INBOX, stop_speech=speaker.stop).start()
     logger.info(f"Ready; watching {INBOX}")
     last_activity = time.time()
     was_held = False

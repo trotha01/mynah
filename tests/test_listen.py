@@ -138,6 +138,43 @@ class VoiceFilterTest(unittest.TestCase):
         self.assertEqual(sent, ["list the todos"])
 
 
+class MemoryKnobsTest(unittest.TestCase):
+    """stt_model / unload_on_off / clear_cache from the settings file, and unloading the models (no MLX needed)."""
+
+    def setUp(self):
+        self.l = listen.Listener(FakeSpeaker(), vad=object(), stt=object())
+        self.settings = Path(os.environ["MYNAH_VOICE_SETTINGS_FILE"])
+
+    def tearDown(self):
+        self.settings.unlink(missing_ok=True)
+
+    def test_defaults_are_unchanged(self):
+        self.l.apply_settings()
+        self.assertEqual(self.l.stt_model, listen.STT_MODEL)
+        self.assertFalse(self.l.unload_on_off)
+        self.assertFalse(self.l.clear_cache)
+
+    def test_settings_file_overrides(self):
+        self.settings.write_text("stt_model=mlx-community/whisper-small-asr-4bit\nunload_on_off=1\nclear_cache=on\n")
+        self.l.apply_settings()
+        self.assertEqual(self.l.stt_model, "mlx-community/whisper-small-asr-4bit")
+        self.assertTrue(self.l.unload_on_off)
+        self.assertTrue(self.l.clear_cache)
+
+    def test_unload_drops_models_and_is_safe_twice(self):
+        self.l.unload_models()
+        self.assertIsNone(self.l.stt)
+        self.assertIsNone(self.l.vad)
+        self.l.unload_models()
+
+    def test_turn_off_unloads_only_when_asked(self):
+        self.l.turn_off()
+        self.assertIsNotNone(self.l.stt)
+        self.l.unload_on_off = True
+        self.l.turn_off()
+        self.assertIsNone(self.l.stt)
+
+
 class FakeSpeaker:
     speaking = False
     player = None

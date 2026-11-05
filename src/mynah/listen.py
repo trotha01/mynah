@@ -45,7 +45,14 @@ VAD_MODEL = os.getenv("MYNAH_VAD_MODEL", "mlx-community/silero-vad")
 STT_MODEL = os.getenv("MYNAH_STT_MODEL", "mlx-community/parakeet-tdt-0.6b-v3")
 SILENCE_SECONDS = float(os.getenv("MYNAH_SILENCE", "0.9"))      # quiet this long = he is done
 THRESHOLD = float(os.getenv("MYNAH_VAD_THRESHOLD", "0.5"))      # speech probability that counts as speech
-WARM_SECONDS = 3.0   # idle time between model warm-ups
+WARM_SECONDS = float(os.getenv("MYNAH_WARM_SECONDS", "3.0"))   # idle time between model warm-ups
+# Memory knobs (all default to the old behaviour). Settings file lines of the same name win over the env var.
+#   unload_on_off=1   (MYNAH_UNLOAD_ON_OFF) drop STT / VAD / voiceprint models the moment voice mode is turned off,
+#                     instead of holding them until speakd's idle exit. Kokoro stays; turning the mode on reloads (logged).
+#   stt_model=<id>    (MYNAH_STT_MODEL) the speech-to-text model; see docs/voice-memory.md for candidates.
+#   clear_cache=1     (MYNAH_CLEAR_CACHE) hand MLX's buffer cache back to the system after each utterance.
+UNLOAD_ON_OFF = os.getenv("MYNAH_UNLOAD_ON_OFF", "0") == "1"
+CLEAR_CACHE = os.getenv("MYNAH_CLEAR_CACHE", "0") == "1"
 BARGE_THRESHOLD = float(os.getenv("MYNAH_BARGE_THRESHOLD", "0.85"))  # stricter while a reply is playing
 MIN_SPEECH_SECONDS = 0.25                    # shorter blips (clicks, a cough) are dropped
 BARGE_SPEECH_SECONDS = 0.25                  # sustained speech over a reply before it is cut off
@@ -69,7 +76,8 @@ def mode_on():
 
 def mode_settings():
     """Optional `name=value` lines in ~/.config/jmacs/voice-settings (read each time the mode is switched on):
-    min_level_db=-35, silence=1.2, barge_in=voice|echo|key, speaker=on, speaker_threshold=0.5.
+    min_level_db=-35, silence=1.2, barge_in=voice|echo|key, speaker=on, speaker_threshold=0.5,
+    stt_model=<hf id>, unload_on_off=1, clear_cache=1, sleep_after=<seconds> (speakd's idle unload).
     A separate file, because switching the mode off deletes the mode file."""
     out = {}
     for path in (MODE_FILE, SETTINGS_FILE):   # the mode file's own lines still work (older setups)
@@ -81,6 +89,17 @@ def mode_settings():
         except OSError:
             pass
     return out
+
+
+def clear_mlx_cache():
+    """Give MLX's buffer cache (freed-but-kept GPU buffers) back to the system. Never raises; a no-op without MLX."""
+    try:
+        import gc
+        import mlx.core as mx
+        gc.collect()
+        (getattr(mx, "clear_cache", None) or mx.metal.clear_cache)()
+    except Exception as e:
+        logger.warning(f"Could not clear the MLX cache: {e}")
 
 
 def normalize(text):
@@ -248,6 +267,10 @@ class Listener(threading.Thread):
         self.submit = submit
         self.vad = vad
         self.stt = stt
+        self.stt_model = STT_MODEL    # the id to load; apply_settings may change it
+        self.stt_loaded = None        # the id self.stt was loaded from (None: injected or not loaded)
+        self.unload_on_off = UNLOAD_ON_OFF
+        self.clear_cache = CLEAR_CACHE
         self.stream = None
         self.stream_lock = threading.Lock()
         self.frames = queue.Queue(maxsize=400)
@@ -336,13 +359,29 @@ class Listener(threading.Thread):
             pass
 
     # ---- models
+    def unload_models(self):
+        """Drop the STT, VAD and voiceprint models and return their memory (voice mode is off, so nothing needs them).
+        Kokoro belongs to the speaker and stays. The next load_models reads the weights back from the disk cache."""
+        had = self.stt is not None or self.vad is not None or self.verifier is not None
+        self.stt = self.vad = self.verifier = None
+        self.stt_loaded = None
+        self.vad_state = None
+        if had:
+            clear_mlx_cache()
+            logger.info("Voice models unloaded (STT, VAD, voiceprint)")
+
     def load_models(self):
+        t0 = time.time()
+        if self.stt is not None and self.stt_loaded not in (None, self.stt_model):
+            logger.info(f"STT model changed to {self.stt_model}: reloading")
+            self.stt = None
         if self.vad is None:
             from mlx_audio.vad.utils import load_model as load_vad
             self.vad = load_vad(VAD_MODEL)
         if self.stt is None:
             from mlx_audio.stt.utils import load_model as load_stt
-            self.stt = load_stt(STT_MODEL)
+            self.stt = load_stt(self.stt_model)
+            self.stt_loaded = self.stt_model
             self.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm up
         if self.speaker_check and self.verifier is None:
             from .speaker_id import SpeakerVerifier
@@ -350,7 +389,7 @@ class Listener(threading.Thread):
             if self.verifier.enrolled:
                 self.verifier._load()
                 self.verifier.embed(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm up
-        logger.info("Voice models ready")
+        logger.info(f"Voice models ready in {time.time() - t0:.1f}s (STT {self.stt_model})")
 
     def speech_probability(self, frame):
         import mlx.core as mx
@@ -373,6 +412,8 @@ class Listener(threading.Thread):
         if self.speaker_check and not self.is_trevor(audio):
             return
         text = self.transcribe(audio)
+        if self.clear_cache:
+            clear_mlx_cache()
         logger.info(f"Heard {len(audio) / SAMPLE_RATE:.1f}s at {level:.0f} dBFS, transcribed in {time.time() - t:.2f}s: {text!r}")
         self.deliver(text)
 
@@ -470,6 +511,9 @@ class Listener(threading.Thread):
             logger.warning(f"Bad setting in {MODE_FILE}: {e}; using defaults")
             self.min_level_db, self.endpointer = MIN_LEVEL_DB, Endpointer()
         self.barge_in = cfg.get("barge_in") or os.getenv("MYNAH_BARGE_IN")
+        self.stt_model = cfg.get("stt_model") or STT_MODEL
+        self.unload_on_off = cfg.get("unload_on_off", "1" if UNLOAD_ON_OFF else "0") in ("1", "on", "true", "yes")
+        self.clear_cache = cfg.get("clear_cache", "1" if CLEAR_CACHE else "0") in ("1", "on", "true", "yes")
         logger.info(f"Settings: min level {self.min_level_db:.0f} dBFS, silence {self.endpointer.silence_frames * FRAME_SECONDS:.2f}s, "
                     f"barge-in {self.barge_in or 'auto'}")
 
@@ -489,6 +533,8 @@ class Listener(threading.Thread):
         self.release_mic()
         self.set_state("off")
         self.speaker.say("Voice mode off.")
+        if self.unload_on_off:
+            self.unload_models()
 
     muted = False
 

@@ -1,1 +1,1 @@
-{"state":"running","msg":"voice-slim: investigated (listen already runs inside speakd = one process); implementing env/settings knobs + Lisp measure script"}
+{"state":"waiting","msg":"PR open, needs local test by Trevor (cloud/voice-slim); jmacs todo-status note: PR open, needs local test by Trevor"}

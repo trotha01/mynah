@@ -130,13 +130,13 @@ or none (blocked with no worker running anywhere)."
       (destructuring-bind (tag updated name) c
         (unless (find name acc :key #'first :test #'string=)
           (push (list name tag 1 updated "cloud") acc))))
-    ;; most recently worked on first (the todo item's UPDATED stamp sorts as text); live workers before dead blocked ones
-    (stable-sort (stable-sort (nreverse acc) #'string> :key #'fourth) #'> :key #'third)))
+    ;; the page orders the list by the real UPDATED time (index.html sortWorkers); here only live before dead, as sent
+    (stable-sort (nreverse acc) #'> :key #'third)))
 
 (defun update-roster (rows) (setf *roster* (roster-from-rows rows (live-windows) (fetch-cloud))))
 
 (defun roster-json ()
-  (format nil "[~{~a~^,~}]" (loop for (n tag live nil kind) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d,\"k\":\"~a\"}" (json-escape n) tag live kind))))
+  (format nil "[~{~a~^,~}]" (loop for (n tag live updated kind) in *roster* collect (format nil "{\"n\":\"~a\",\"t\":\"~a\",\"l\":~d,\"u\":\"~a\",\"k\":\"~a\"}" (json-escape n) tag live (json-escape (or updated "")) kind))))
 
 
 ;;; Worker announcements

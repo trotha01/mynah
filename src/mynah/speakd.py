@@ -14,7 +14,9 @@ STALE_SECONDS are discarded unread (so a restart never replays old replies).
 """
 import faulthandler
 import json
+import itertools
 import logging
+import math
 import os
 import re
 import signal
@@ -36,6 +38,32 @@ MAX_CHARS = int(os.getenv("MYNAH_MAX_CHARS", "700"))
 INBOX = Path(os.getenv("MYNAH_INBOX", str(Path.home() / ".local/state/mynah/inbox")))
 PIDFILE = INBOX.parent / "speakd.pid"  # hooks/claude-speak checks it to start this process on demand
 SLEEP_AFTER_SECONDS = int(os.getenv("MYNAH_SLEEP_AFTER", "300"))  # voice mode off and nothing to say for this long: unload the models (see sleep_main)
+# Instant tier (macOS `say`, a system service: near-zero memory, audio in tens of ms). MYNAH_FIRST_SENTENCE=say speaks the
+# reply's first sentence with `say` and hands the rest to Kokoro; MYNAH_TTS=say-only never loads Kokoro at all (lowest memory).
+# Defaults keep today's behavior (Kokoro for everything).
+# "Mynah Speaker.app" starts this process without a shell environment, so the same names can also be set, one KEY=value per
+# line, in ~/.config/mynah/speakd.conf (the environment wins).
+CONF_FILE = Path(os.getenv("MYNAH_CONF", str(Path.home() / ".config/mynah/speakd.conf")))
+
+
+def _conf(name, default=""):
+    if name in os.environ:
+        return os.environ[name].strip()
+    try:
+        for line in CONF_FILE.read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == name:
+                return value.strip().strip("\"'")
+    except OSError:
+        pass
+    return default
+
+
+TTS = _conf("MYNAH_TTS", "kokoro").lower()                       # kokoro | say-only
+FIRST_SENTENCE = _conf("MYNAH_FIRST_SENTENCE", "off").lower()    # off | say
+SAY_VOICE = _conf("MYNAH_SAY_VOICE")   # a `say -v ?` name such as Samantha; empty = the system voice
+SAY_RATE = _conf("MYNAH_SAY_RATE")     # words per minute (`say -r`); empty = the voice's default
+FIRST_MAX_CHARS = int(_conf("MYNAH_FIRST_MAX_CHARS", "240"))   # no sentence end by here: no split, Kokoro speaks it all
 STALE_SECONDS = 120
 POLL_SECONDS = 0.1
 # Hold-to-talk: Parakeet Dictation's push-to-talk key (its saved setting) stops the speech.
@@ -57,6 +85,76 @@ def clean_for_speech(text: str) -> str:
     ends = [m.end() for m in _SENTENCE_END_RE.finditer(head)]
     cut = ends[-1] if ends and ends[-1] > MAX_CHARS // 3 else len(head)
     return head[:cut].rstrip() + " The rest is on screen."
+
+
+_FIRST_END_RE = re.compile(r"[.!?]+[\"')\]]*(?=\s|$)|\n")
+_NOT_AN_END = {"e.g", "i.e", "vs", "etc", "mr", "mrs", "ms", "dr", "st", "no", "approx", "fig"}
+
+
+def split_first_sentence(text: str, limit: int = FIRST_MAX_CHARS):
+    """(first sentence, rest) of already-cleaned speech text; (None, text) when there is no clear sentence end within `limit`
+    characters. Skips the full stops of abbreviations ("e.g.", "Dr.") and list numbers ("1."), which are not sentence ends."""
+    for m in _FIRST_END_RE.finditer(text[:limit + 1]):
+        words = text[:m.start()].split()
+        last = words[-1].lower().rstrip(".") if words else ""
+        if m.group().startswith(".") and len(m.group().strip()) == 1 and (last in _NOT_AN_END or last.isdigit() or len(last) == 1):
+            continue
+        first, rest = text[:m.end()].strip(), text[m.end():].strip()
+        return (first, rest) if first else (None, text)
+    return None, text
+
+
+class SayProc:
+    """One `say` run (macOS speech, a separate tiny process). The text goes in on stdin, so it can never be read as an option.
+    failed() is True when say could not start or exited with an error (unknown voice, no audio device): the caller then falls
+    back to Kokoro. kill() is safe from any thread."""
+
+    def __init__(self, text, voice=None):
+        self.text, self.p, self.killed = text, None, False
+        voice = SAY_VOICE if voice is None else voice   # "" asks for the system voice
+        cmd = ["say"] + (["-v", voice] if voice else []) + (["-r", SAY_RATE] if SAY_RATE else [])
+        try:
+            self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.p.stdin.write(text.encode("utf-8", "replace"))
+            self.p.stdin.close()
+        except (OSError, ValueError) as e:
+            logger.warning(f"say could not start: {e}")
+            self.kill()
+            self.p = None
+
+    def running(self):
+        return self.p is not None and self.p.poll() is None
+
+    def failed(self):
+        return self.p is None or (not self.killed and self.p.poll() not in (None, 0))
+
+    def kill(self):
+        self.killed = True
+        try:
+            if self.p is not None and self.p.poll() is None:
+                self.p.terminate()   # say stops its audio when terminated
+        except Exception:
+            pass
+
+    def wait(self, cancelled=lambda: False):
+        """Block until say is done or cancelled() (then kill it). While it runs the mouth gets a small wobble (it has no audio
+        blocks to follow). Returns True when it finished by itself."""
+        while self.running():
+            if cancelled():
+                self.kill()
+                return False
+            pulse_level()
+            time.sleep(0.03)
+        return not self.killed
+
+
+def pulse_level():
+    """Mouth movement while `say` speaks: the companion reads the level file, which `say` does not feed. Called from a plain
+    thread (never the audio callback); only stores a number and lets the level writer thread do the file I/O."""
+    global _level_at, _level_rms
+    _level_at = time.monotonic()
+    _level_rms = 0.05 + 0.05 * abs(math.sin(time.monotonic() * 9))
+    _start_level_writer()
 
 
 def refresh_audio_devices():
@@ -167,6 +265,7 @@ class Speaker:
         self.speaking = False             # a reply is queued or playing (the listener reads it)
         self.listener = None              # listen.Listener: gives up the microphone before devices are refreshed
         self.paused = False               # the reply is held (Right Command tap); the audio queue is kept
+        self.sayproc = None               # the SayProc speaking a first sentence (guarded by lock)
 
     def _chunks(self, text):
         """Yield (audio, mouth events, timed words) per chunk. Drives Kokoro's pipeline directly, so the phonemes and the per-phoneme
@@ -231,6 +330,9 @@ class Speaker:
             self.speaking = False
             self.paused = False
             player = self.player
+            sayproc, self.sayproc = self.sayproc, None
+        if sayproc is not None:
+            sayproc.kill()       # a first sentence in `say` is cut too
         if player is not None:
             self._close(player)  # cuts audio that is already playing
 
@@ -266,11 +368,55 @@ class Speaker:
                 if token == self.token:
                     self.speaking = False  # also when starting the audio failed
 
+    def _first_sentence_tier(self, text, token):
+        """MYNAH_FIRST_SENTENCE=say: speak the first sentence with `say` right now, and return Kokoro's chunks for the rest (the
+        whole text when the tier is off, there is no clear first sentence, or `say` failed). Returns None when there is nothing
+        left for Kokoro to speak (one-sentence reply) or the reply was interrupted. No double speaking: Kokoro never gets the
+        first sentence unless `say` failed, and its audio is only queued after `say` has exited (it generates the rest while
+        `say` talks, so the hand-over has no extra wait). The player (which the listener takes as "speaker output is open")
+        is created by the caller only after this returns, so the microphone stays shut while `say` plays: the echo canceller
+        has no reference signal for `say`."""
+        first, rest = split_first_sentence(text) if FIRST_SENTENCE == "say" else (None, text)
+        if not first:
+            return self._chunks(text)
+        say = SayProc(first)
+        with self.lock:
+            if token != self.token:
+                say.kill()
+                return None
+            self.sayproc = say
+        chunks, ahead = None, None
+        if rest and not say.failed():
+            try:   # Kokoro works on the rest while `say` talks
+                chunks = self._chunks(rest)
+                ahead = next(chunks, None)
+            except Exception as e:
+                logger.warning(f"Kokoro could not prepare the rest ({e}); it follows `say`'s first sentence")
+                chunks, ahead = None, None
+        finished = say.wait(lambda: token != self.token)
+        with self.lock:
+            if self.sayproc is say:
+                self.sayproc = None
+        if token != self.token:
+            return None
+        if not finished or say.failed():
+            logger.warning("say failed: Kokoro speaks the whole reply")
+            return self._chunks(text)
+        if not rest:
+            logger.info(f"Spoke {len(text)} chars with say only")
+            return None
+        if chunks is None:
+            return self._chunks(rest)
+        return itertools.chain([ahead] if ahead is not None else [], chunks)
+
     def _speak_locked(self, text, token):
         with self.run_lock:
             if token != self.token:
                 return
             from mlx_audio.tts.audio_player import AudioPlayer
+            chunks = self._first_sentence_tier(text, token)
+            if chunks is None:   # interrupted, or the whole reply was one sentence and `say` spoke it
+                return
             if self.listener is not None:
                 self.listener.release_mic()  # PortAudio cannot be re-initialised under an open input stream
             refresh_audio_devices()
@@ -289,7 +435,7 @@ class Speaker:
             started = time.time()
             first = None
             try:
-                for audio, events, words in self._chunks(text):
+                for audio, events, words in chunks:
                     if token != self.token:
                         break
                     if first is None:
@@ -311,6 +457,70 @@ class Speaker:
                         self.player = None
                     if token == self.token:
                         self.speaking = False
+
+
+class SayOnlySpeaker:
+    """MYNAH_TTS=say-only: every reply is spoken by macOS `say`; Kokoro is never imported or loaded. Offers the surface the
+    listener and drain_inbox use (speaking, say, stop, paused, set_paused, player, listener). Differences from Speaker, all
+    consequences of `say` being a separate process whose audio this process cannot see: no echo-cancellation reference and
+    no mouth timeline (so no voice barge-in while it talks: the microphone stays shut, hold the push-to-talk key to interrupt,
+    and the mouth only wobbles), and no pause (Right Command tap does nothing)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.token = 0
+        self.speaking = False
+        self.paused = False
+        self.player = None
+        self.listener = None
+        self.sayproc = None
+
+    def set_paused(self, paused):
+        return False
+
+    def stop(self):
+        with self.lock:
+            self.token += 1
+            self.speaking = False
+            sayproc, self.sayproc = self.sayproc, None
+        if sayproc is not None:
+            sayproc.kill()
+
+    def say(self, text):
+        self.stop()
+        write_say_kind(text)
+        with self.lock:
+            token = self.token
+            self.speaking = True
+        threading.Thread(target=self._speak, args=(text, token), daemon=True).start()
+
+    def _speak(self, text, token):
+        try:
+            proc = SayProc(text)
+            with self.lock:
+                if token != self.token:
+                    proc.kill()
+                    return
+                self.sayproc = proc
+            finished = proc.wait(lambda: token != self.token)
+            if finished and proc.failed() and SAY_VOICE:
+                logger.warning(f"say failed with voice {SAY_VOICE!r}: trying the system voice")
+                proc = SayProc(text, voice="")
+                with self.lock:
+                    if token != self.token:
+                        proc.kill()
+                        return
+                    self.sayproc = proc
+                finished = proc.wait(lambda: token != self.token)
+            if finished and proc.failed():
+                logger.error("say failed (Kokoro is not loaded in say-only mode): the reply was not spoken")
+            elif finished:
+                logger.info(f"Spoke {len(text)} chars with say only")
+        finally:
+            with self.lock:
+                if token == self.token:
+                    self.speaking = False
+                    self.sayproc = None
 
 
 # Device-dependent modifier bits (IOKit NX_DEVICE*KEYMASK) in CGEventSourceFlagsState, for the names Parakeet
@@ -489,7 +699,10 @@ def sleep_main():
     except Exception as e:
         logger.warning(f"Push-to-talk key unavailable while asleep: {e}")
         hold = None
-    logger.info(f"Asleep: no models loaded; a tap of the push-to-talk key, a reply or `voice-mode on` wakes it ({os.getpid()})")
+    say_only = TTS == "say-only"   # replies are spoken right here by `say`: only voice mode on (or a key tap) loads anything
+    speaker = SayOnlySpeaker() if say_only else None
+    logger.info(f"Asleep: no models loaded; a tap of the push-to-talk key, {'' if say_only else 'a reply '}or `voice-mode on` wakes it ({os.getpid()})"
+                + ("; replies are spoken by say" if say_only else ""))
     was_held, press_at = False, 0.0
     while True:
         try:
@@ -499,8 +712,12 @@ def sleep_main():
             if was_held and not held and time.time() - press_at < TAP_SECONDS:
                 wake(key=True)
             was_held = held
-            if mode_on() or any(p.suffix in (".say", ".stop") for p in INBOX.glob("*")):
+            if mode_on() or (not say_only and any(p.suffix in (".say", ".stop") for p in INBOX.glob("*"))):
                 wake()
+            if say_only:
+                if held:
+                    speaker.stop()
+                drain_inbox(speaker, quiet=held)
         except Exception as e:
             logger.error(f"Error while asleep: {e}")
         time.sleep(POLL_SECONDS)
@@ -522,24 +739,42 @@ def wake(key=False):
     _reexec()
 
 
+def other_instance_running():
+    """Another speakd is alive (the pid file names it). Not this process: after a sleep/wake re-exec the pid file holds our own pid."""
+    try:
+        pid = int(PIDFILE.read_text())
+        if pid == os.getpid():
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def main():
     if "--sleep" in sys.argv:
+        return sleep_main()
+    if TTS == "say-only" and not mode_on():
+        if other_instance_running():   # two hooks firing together may both start one: the later one backs off (as below)
+            logger.info("Already running")
+            return
+        logger.info("MYNAH_TTS=say-only and voice mode off: staying light (no Kokoro; voice mode on loads the listener)")
         return sleep_main()
     INBOX.mkdir(parents=True, exist_ok=True)
     wire_model_memory()
     # The hook starts this process when it is not running and drops the reply that triggered the start in
     # the inbox, so files that are still fresh must survive the warm-up; stale ones are dropped unread.
-    try:  # two hooks firing together may both start one: the later one backs off
-        os.kill(int(PIDFILE.read_text()), 0)
+    if other_instance_running():  # two hooks firing together may both start one: the later one backs off
         logger.info("Already running")
         return
-    except (OSError, ValueError):
-        pass
     PIDFILE.write_text(str(os.getpid()))
     if mode_on():
         write_state("loading")       # J: "waking up..." while the models load
-    speaker = Speaker()
-    speaker.warm_up()
+    if TTS == "say-only":
+        speaker = SayOnlySpeaker()   # no Kokoro: only the listener's models load, and only while voice mode is on
+    else:
+        speaker = Speaker()
+        speaker.warm_up()
     signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
     faulthandler.register(signal.SIGUSR1, all_threads=True)  # kill -USR1 <pid>: every thread's stack goes to the log
     try:

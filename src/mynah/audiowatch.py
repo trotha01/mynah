@@ -101,8 +101,14 @@ def locked_call(what, fn):
 def serialized(fn, what):
     """fn wrapped so it runs under the audio lock (used for Listener.open_mic / release_mic, which live in listen.py)."""
     def wrapper(*a, **kw):
-        with audio_lock(what):
-            return fn(*a, **kw)
+        try:
+            with audio_lock(what):
+                return fn(*a, **kw)
+        except AudioLockTimeout:
+            # the wedge is already triggered; raising would kill the listener thread (its except clause calls
+            # release_mic, which would raise too), fatal when restarts are capped
+            logger.error(f"{what} skipped: audio lock wedged")
+            return None
     wrapper.__name__ = getattr(fn, "__name__", what)
     return wrapper
 
@@ -214,6 +220,7 @@ class WedgeHandler:
         self._lock = threading.Lock()
         self.dump_path = None
         self.native = True
+        self.exit = os._exit         # replaced in tests
 
     def configure(self, restart, state_dir=None, native=True):
         self.restart, self.native = restart, native
@@ -240,8 +247,14 @@ class WedgeHandler:
             logger.error("No restart configured; the speaker stays wedged")
             return
         if not restart_allowed(history, now):
-            logger.error(f"Not restarting: {MAX_RESTARTS} wedge restarts in the last {RESTART_WINDOW:.0f}s already. "
-                         "speakd stays up but its audio is wedged; kill it by hand.")
+            # the abandoned audio-stop thread keeps PortAudio state, so staying up would only time out forever.
+            # os._exit skips atexit and Pa_Terminate; hooks/claude-speak starts speakd on the next reply (no pid file).
+            logger.error("Too many wedge restarts: exiting; the next reply's hook starts speakd again")
+            try:
+                (Path(self.state_dir) / "speakd.pid").unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.exit(1)
             return
         os.environ[RESTART_ENV] = ",".join(f"{t:.0f}" for t in [*history, now] if now - t < RESTART_WINDOW)
         logger.error("Restarting speakd")
@@ -301,10 +314,11 @@ class Watchdog(threading.Thread):
         self._active = 0.0        # seconds the current utterance has held the stream, pause excluded
         self._last = None
         self._stop_sent_for = None
+        self._stale_ticks = 0     # consecutive ticks that asked for a restart on a stale .say
 
     def tick(self):
         now = self.clock()
-        held = getattr(self.speaker.run_lock, "held_since", None)
+        held = getattr(getattr(self.speaker, "run_lock", None), "held_since", None)
         if held is None:
             self._held_key = self._last = None
             self._active, active = 0.0, None
@@ -319,6 +333,13 @@ class Watchdog(threading.Thread):
         if age is not None:
             age = min(age, now - self.started)   # a restart must not count the time the models were loading
         decision = watchdog_decision(age, self.speaker.paused, active)
+        if decision and decision != "stop" and "unconsumed" in decision[1]:
+            # a .say dropped just before system sleep ages across it: wait one more tick for the main loop to drain it
+            self._stale_ticks += 1
+            if self._stale_ticks < 2:
+                return None
+        else:
+            self._stale_ticks = 0
         if decision == "stop":
             if self._stop_sent_for != self._held_key:
                 self._stop_sent_for = self._held_key

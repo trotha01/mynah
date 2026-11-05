@@ -1,5 +1,7 @@
 """Pure-logic tests for src/mynah/audiowatch.py: fake streams that hang, threads and events. No audio, no macOS.
-Run: PYTHONPATH=src python3 -m pytest tests/test_audiowatch.py -q"""
+Run: PYTHONPATH=src python3 -m pytest tests/test_audiowatch.py -q
+(macOS: uv tool install --force mynah --with pytest, then
+ PYTHONPATH=src ~/.local/share/uv/tools/mynah/bin/python -m pytest tests/test_audiowatch.py -q)"""
 import os
 import threading
 import time
@@ -31,6 +33,7 @@ def fresh_wedge(tmp_path):
     h = aw.WedgeHandler()
     h.state_dir = tmp_path
     h.native = False
+    h.exit = lambda code: None   # never os._exit the test run
     old = aw.WEDGE
     aw.WEDGE = h
     yield h
@@ -224,6 +227,8 @@ def test_watchdog_restarts_on_a_stale_say_file(tmp_path):
     f.write_text("hi")
     os.utime(f, (t[0] - 30, t[0] - 30))
     t[0] += 20                      # past the startup grace: the file really has waited
+    assert w.tick() is None and not wedges   # first stale tick only arms (see the sleep test)
+    t[0] += 1
     assert w.tick()[0] == "restart" and len(wedges) == 1
 
 
@@ -292,3 +297,51 @@ def test_fallback_command_kills_then_starts():
     assert "kill -9 123" in c and "-m mynah.speakd" in c
     c2 = aw.fallback_command(123, os.getcwd(), "/x/python")
     assert "open -g" in c2
+
+
+def test_watchdog_needs_two_stale_ticks_after_a_clock_jump(tmp_path):
+    t = [time.time()]
+    sp, w, stops, wedges = make_watchdog(tmp_path, lambda: t[0])
+    f = tmp_path / "1.1.say"
+    f.write_text("hi")
+    os.utime(f, (t[0], t[0]))
+    t[0] += 3600                    # system sleep: the file aged an hour in one step
+    assert w.tick() is None and not wedges
+    f.unlink()                      # the main loop drained it before the next tick
+    t[0] += 1
+    assert w.tick() is None and not wedges and w._stale_ticks == 0
+
+
+def test_watchdog_tolerates_a_speaker_without_run_lock(tmp_path):
+    class SayOnly:
+        paused = False
+    t = [time.time()]
+    w = aw.Watchdog(SayOnly(), tmp_path, stop_speech=lambda: None, wedge=lambda r: None, clock=lambda: t[0], started=t[0])
+    assert w.tick() is None
+
+
+def test_serialized_returns_none_when_the_audio_lock_is_wedged(fresh_wedge, monkeypatch):
+    monkeypatch.setattr(aw, "LOCK_TIMEOUT", 0.05)
+    fresh_wedge.configure(lambda r: None, native=False)
+    release, held = threading.Event(), threading.Event()
+
+    def holder():
+        with aw.audio_lock("holder"):
+            held.set()
+            release.wait(5)
+    threading.Thread(target=holder, daemon=True).start()
+    held.wait(2)
+    ran = []
+    wrapped = aw.serialized(lambda: ran.append(1) or "x", "open_mic")
+    assert wrapped() is None and not ran and fresh_wedge.tripped
+    release.set()
+
+
+def test_restart_cap_exits_and_removes_the_pid_file(fresh_wedge, tmp_path, monkeypatch):
+    (tmp_path / "speakd.pid").write_text("123")
+    monkeypatch.setenv(aw.RESTART_ENV, ",".join(str(int(time.time())) for _ in range(aw.MAX_RESTARTS)))
+    codes = []
+    fresh_wedge.exit = codes.append
+    fresh_wedge.configure(lambda r: codes.append("restart"), tmp_path, native=False)
+    fresh_wedge.trigger("capped")
+    assert wait_for(lambda: codes == [1]) and not (tmp_path / "speakd.pid").exists()

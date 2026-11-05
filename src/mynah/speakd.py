@@ -146,8 +146,19 @@ def tapped_player_class():
                 return
             if self.lipsync is not None:
                 self.lipsync.on_block(frames, time_info)   # only records where the stream is (the mouth timeline)
+            import sounddevice as sd
             try:
                 super().callback(outdata, frames, time_info, status)
+                self._silent = 0
+            except sd.CallbackStop:
+                # AudioPlayer raises CallbackStop on an empty buffer, which makes PortAudio stop the audio unit from
+                # the IO thread (startStopCallback) while _close stops it from Python: the lock cycle in
+                # speakd-hang.sample. Swallow it: the stream keeps running on silence and only _close stops it.
+                # mlx-audio sets drain_event from the stream's finished_callback, which now never fires, so set it
+                # here, one silent block after the last real one (so the tail is not clipped by _close's abort).
+                self._silent = getattr(self, "_silent", 0) + 1
+                if self._silent >= 2:
+                    self.drain_event.set()
             finally:  # also when the last block ends the stream (CallbackStop)
                 if self.tap is not None:
                     self.tap(outdata[:, 0])
@@ -465,9 +476,9 @@ def wire_model_memory():
 
 
 def _restart_after_wedge(reason):
-    """audiowatch.WEDGE.restart: replace this process with a fresh speakd. The applet only runs `do shell script ... &`
-    and exits, so speakd has no live parent (launchd adopts it); exec keeps the pid and the desktop session, and there
-    is nothing to orphan. The pid file holds our own pid, which the new image would read as "Already running": drop it.
+    """audiowatch.WEDGE.restart: replace this process with a fresh speakd. exec keeps the pid, so the applet and the
+    shell that started it (still alive in the 2026-11-05 sample: bash [42269]; the earlier recovery had to kill the applet
+    and its sh) stay its parent and nothing new is orphaned. The pid file holds our own pid, which the new image would read as "Already running": drop it.
     If exec itself hangs, a detached shell kills this pid and starts the speaker the way `claude-speak Start` does."""
     PIDFILE.unlink(missing_ok=True)
     write_state("loading")

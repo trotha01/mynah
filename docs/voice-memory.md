@@ -27,8 +27,8 @@ Python's `close_lock` is not involved, so no Python-level fix can release it; th
 - On a wedge: log `AUDIO WEDGED at <time>: <reason>`, write `~/.local/state/mynah/speakd-wedge-<pid>-<time>.txt`
   (every Python thread's stack), plus `.sample.txt` (macOS `sample`: the native CoreAudio stacks, like the 11-04
   file) and `.footprint.txt`, then restart speakd by `exec` (same pid, same desktop session; the pid file is
-  removed first so the new image does not see itself as "Already running"). The applet and its `sh` parent have
-  already exited (it only runs `do shell script ... &`), so no orphan is left. If `exec` itself hangs, a detached
+  removed first so the new image does not see itself as "Already running"). `exec` keeps the pid, so whatever
+  parent speakd has (the applet and its `sh`/bash, still alive in the 2026-11-05 sample) stays its parent. If `exec` itself hangs, a detached
   shell kills the pid after about 6 s and starts the speaker the way `hooks/claude-speak Start` does. At most 5
   wedge restarts per 10 minutes; after that speakd logs that it will not restart again.
 - A watchdog thread (reads only plain attributes, takes no speakd lock) restarts on the same path when a `.say` in
@@ -59,3 +59,9 @@ is its high-water mark. `vmmap` lists swapped per region in the `SWAPPED` column
 showed a footprint of 11.9 GB with RSS 2.9 GB (probably MLX address space, not a leak). That is a different thing from
 the wedge: the wedge is footprint that grows or stays high while nothing is spoken and replies pile up in
 `~/.local/state/mynah/inbox`.
+
+- `TappedPlayer.callback` swallows mlx-audio's `sd.CallbackStop` (empty buffer), so PortAudio never stops the audio
+  unit from the IO thread; the stream runs on silence and only `_close` (under `AUDIO_LOCK`) stops it.
+- Running the tests: `uv tool install --force mynah --with pytest` (or `uvx --with-editable . pytest`), then
+  `PYTHONPATH=src ~/.local/share/uv/tools/mynah/bin/python -m pytest tests/test_audiowatch.py -q`. On Linux:
+  `pip install pytest && PYTHONPATH=src python3 -m pytest tests/test_audiowatch.py -q`.

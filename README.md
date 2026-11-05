@@ -102,6 +102,21 @@ The hotkey reader above follows the iTerm2 tab; this half speaks every reply of 
 - Registered in `~/.claude/settings.json` under `Stop` and `UserPromptSubmit`
   (`$HOME/src/mynah/hooks/claude-speak Stop` / `... UserPromptSubmit`). Claude Code reads hooks at startup, so a
   running session needs `/hooks` (review) or a restart to pick them up.
+- Instant `say` tier (optional, off by default; macOS `say` is a system service, so it costs ~0 MB here and starts in tens of ms):
+  - `MYNAH_FIRST_SENTENCE=say`: the first sentence of a reply is spoken by `say` at once, Kokoro generates the rest while
+    `say` talks and queues its audio only after `say` has exited (no overlap; Kokoro never gets the first sentence unless
+    `say` failed). One-sentence replies never touch Kokoro. A newer reply, a `.stop` and hold-to-talk kill `say` too.
+  - `MYNAH_TTS=say-only`: Kokoro is never loaded. With voice mode off the process stays in its light sleep loop and speaks
+    replies itself; only `voice-mode on` loads the listener's models. Lowest memory; the voice is the system voice.
+  - `MYNAH_SAY_VOICE` (a name from `say -v '?'`, e.g. `Samantha`; empty = system voice), `MYNAH_SAY_RATE` (words per minute),
+    `MYNAH_FIRST_MAX_CHARS` (240; no sentence end within it = no split).
+  - "Mynah Speaker.app" starts speakd without a shell environment, so the same names can be put one `KEY=value` per line in
+    `~/.config/mynah/speakd.conf` (the environment wins). Restart speakd after changing them.
+  - Fallbacks: if `say` cannot start or exits with an error, `FIRST_SENTENCE=say` has Kokoro speak the whole reply;
+    `say-only` retries with the system voice and otherwise logs an error (Kokoro is not loaded there).
+  - Limits of `say` (a separate process whose audio mynah cannot see): while it speaks there is no echo-cancel reference and
+    no mouth timeline, so the microphone stays shut (hold the push-to-talk key to interrupt; voice barge-in works again
+    during the Kokoro part), the companion's mouth only wobbles, and the pause tap (Right Command) does nothing in `say-only`.
 - Mute: `rm ~/.config/jmacs/voice-replies`; unmute: `touch ~/.config/jmacs/voice-replies`.
 - Log: `~/Library/Logs/mynah-speakd.log`. Stop it now: `kill $(cat ~/.local/state/mynah/speakd.pid)`.
 - Input side: parakeet-dictation (hold right Option, words type at the cursor).

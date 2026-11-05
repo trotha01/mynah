@@ -457,8 +457,32 @@ def wire_model_memory():
         gb = float(os.getenv("MYNAH_WIRED_GB", "4"))
         old = mx.set_wired_limit(int(gb * 2**30))
         logger.info(f"MLX wired memory limit {gb:.1f} GB (was {old / 2**30:.1f} GB)")
+        # Optional caps, unset by default (docs/voice-memory.md): the buffer cache MLX keeps after freeing, and a hard memory limit.
+        if os.getenv("MYNAH_MLX_CACHE_MB"):
+            old = mx.set_cache_limit(int(float(os.environ["MYNAH_MLX_CACHE_MB"]) * 2**20))
+            logger.info(f"MLX cache limit {os.environ['MYNAH_MLX_CACHE_MB']} MB (was {old / 2**20:.0f} MB)")
+        if os.getenv("MYNAH_MLX_MEMORY_GB"):
+            old = mx.set_memory_limit(int(float(os.environ["MYNAH_MLX_MEMORY_GB"]) * 2**30))
+            logger.info(f"MLX memory limit {os.environ['MYNAH_MLX_MEMORY_GB']} GB (was {old / 2**30:.1f} GB)")
     except Exception as e:
-        logger.warning(f"Could not set the MLX wired limit: {e}")
+        logger.warning(f"Could not set the MLX memory limits: {e}")
+
+
+_sleep_after = (0.0, SLEEP_AFTER_SECONDS)
+
+
+def sleep_after_seconds():
+    """MYNAH_SLEEP_AFTER, or `sleep_after=<seconds>` in the voice settings file (so it can change without restarting the app-launched
+    speaker; re-read every 5 s). A bad value falls back to the env default."""
+    global _sleep_after
+    now = time.monotonic()
+    if now - _sleep_after[0] > 5:
+        from .listen import mode_settings
+        try:
+            _sleep_after = (now, max(10.0, float(mode_settings().get("sleep_after", SLEEP_AFTER_SECONDS))))
+        except ValueError:
+            _sleep_after = (now, SLEEP_AFTER_SECONDS)
+    return _sleep_after[1]
 
 
 def _reexec(*args):
@@ -562,7 +586,7 @@ def main():
     while True:
         if mode_on() or any(p.suffix in (".say", ".stop") for p in INBOX.glob("*")):
             last_activity = time.time()
-        elif time.time() - last_activity > SLEEP_AFTER_SECONDS:
+        elif time.time() - last_activity > sleep_after_seconds():
             logger.info("Idle with voice mode off: unloading the models (a key tap, a reply or `voice-mode on` loads them again)")
             speaker.stop()
             listener.release_mic()

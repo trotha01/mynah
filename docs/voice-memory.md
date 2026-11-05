@@ -62,6 +62,13 @@ the wedge: the wedge is footprint that grows or stays high while nothing is spok
 
 - `TappedPlayer.callback` swallows mlx-audio's `sd.CallbackStop` (empty buffer), so PortAudio never stops the audio
   unit from the IO thread; the stream runs on silence and only `_close` (under `AUDIO_LOCK`) stops it.
+- `TappedPlayer.start_stream` stops and closes the previous stream first (under `AUDIO_LOCK`, bounded by `STOP_TIMEOUT`,
+  errors logged) and starts nothing after `_close`. Needed after a mid-reply underrun: mlx-audio 0.5.6 would otherwise
+  overwrite `self.stream`, leaving the old one running on the shared buffer.
+- mlx-audio versions: `pyproject.toml` says `mlx-audio>=0.5.6` (not pinned). Tested: 0.5.6 (the live tool; its callback sets
+  `playing=False` and `drain_event` itself) and 0.6.4 (callback sets `playing=False` only; `drain_event` comes from the
+  stream's `finished_callback`, which never fires with `CallbackStop` swallowed, so the callback sets it from the second
+  silent block; its `start_stream` stops the old stream itself). Unit tests: `tests/test_tapped_player.py`, fakes of both.
 - Running the tests: `uv tool install --force mynah --with pytest` (or `uvx --with-editable . pytest`), then
   `PYTHONPATH=src ~/.local/share/uv/tools/mynah/bin/python -m pytest tests/test_audiowatch.py -q`. On Linux:
   `pip install pytest && PYTHONPATH=src python3 -m pytest tests/test_audiowatch.py -q`.

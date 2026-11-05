@@ -153,9 +153,15 @@ def tapped_player_class():
             except sd.CallbackStop:
                 # AudioPlayer raises CallbackStop on an empty buffer, which makes PortAudio stop the audio unit from
                 # the IO thread (startStopCallback) while _close stops it from Python: the lock cycle in
-                # speakd-hang.sample. Swallow it: the stream keeps running on silence and only _close stops it.
-                # mlx-audio sets drain_event from the stream's finished_callback, which now never fires, so set it
-                # here, one silent block after the last real one (so the tail is not clipped by _close's abort).
+                # speakd-hang.sample. Swallow it: the stream keeps running on silence and only _close (or start_stream
+                # below, when more audio arrives after an underrun) stops it.
+                # The two mlx-audio versions differ in who signals "drained" (tested 0.5.6 and 0.6.4):
+                #   0.5.6: this callback itself sets playing=False and drain_event (audio_player.py:45-46) before raising;
+                #   0.6.4: only the stream's finished_callback sets drain_event (:49-53), which never fires now.
+                # So set both here, never relying on either version: playing=False (so queue_audio / wait_for_drain
+                # know the stream is idle) and, from the second consecutive silent block on, drain_event (one block
+                # after the last real one, so the tail is not clipped by _close; 0.5.6 already sets it on the first).
+                self.playing = False
                 self._silent = getattr(self, "_silent", 0) + 1
                 if self._silent >= 2:
                     self.drain_event.set()
@@ -163,6 +169,31 @@ def tapped_player_class():
                 if self.tap is not None:
                     self.tap(outdata[:, 0])
                 write_level(outdata[:, 0])
+
+        def start_stream(self):
+            """Never leave an old stream running when a new one is started (an underrun mid-reply, then more audio).
+            callback() swallows CallbackStop, so the old stream is still open and pulling from the shared buffer:
+            mlx-audio 0.5.6's start_stream just overwrites self.stream (audio_player.py:49-59), leaking it and playing the
+            rest of the reply about twice as fast; 0.6.4 stops the old stream itself (:58-59) but unbounded and outside
+            AUDIO_LOCK. Do it here for both: under AUDIO_LOCK (re-entrant, the same lock _close takes, and nothing else is
+            taken inside it), bounded by STOP_TIMEOUT, errors logged. After _close, start nothing (it would leak)."""
+            with audiowatch.audio_lock("start_stream"):
+                if getattr(self, "_mynah_closed", False):
+                    self.drain_event.set()   # 0.5.6's wait_for_drain would wait for ever on a stream that never starts
+                    return
+                old, self.stream = self.stream, None
+                if old is not None:
+                    def stop_old():
+                        try:
+                            old.stop()
+                        finally:
+                            old.close()
+                    finished, err = audiowatch.run_timed(stop_old, audiowatch.STOP_TIMEOUT, "old-stream-stop")
+                    if not finished:
+                        audiowatch.WEDGE.trigger(f"stopping the previous stream did not return within {audiowatch.STOP_TIMEOUT:.1f}s")
+                    elif err is not None:
+                        logger.warning(f"Stopping the previous stream failed: {err!r}")
+                super().start_stream()
     return TappedPlayer
 
 

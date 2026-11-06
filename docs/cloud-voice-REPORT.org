@@ -1,0 +1,183 @@
+#+TITLE: Cloudflare-hosted voice synthesis for Jmacs voice: interrupts and echo cancellation
+#+DATE: 2026-11-06
+#+STARTUP: showall
+
+* Verdict
+
+*Technically yes, but not worth doing for the stated reason, and not with Kokoro.*
+
+1. *Kokoro itself cannot run on Cloudflare's managed AI.* No Kokoro model is in the Workers AI catalog that I could find. The only TTS models on Workers AI are =@cf/myshell-ai/melotts= and =@cf/deepgram/aura-1= (both confirmed via changelog and model-page search results, see Sources). Running Kokoro means a Cloudflare Container on CPU (max 4 vCPU / 12 GiB per custom instance). I found no confirmation that customer GPUs are available. Calling that a "maybe, slow" path, not a plan.
+2. *Moving TTS to the cloud means changing the voice.* Aura-1 or MeloTTS replace =af_heart=. Mouth sync also changes: =viseme.py= consumes Kokoro's per-phoneme durations (=speakd.py= =_chunks=), which remote audio does not carry. The existing loudness-driven fallback mouth covers it, with less accuracy.
+3. *The 12 GB premise looks wrong, and that decides the value.* Kokoro-82M is 82 M parameters, about 165 MB at bf16 (computed: 82e6 x 2 bytes). The repo itself says unloading all voice models returned "about 3.6 GB" (=speakd.py:481=) and caps MLX wired memory at 4 GB by default (=speakd.py:457=, =MYNAH_WIRED_GB=). The biggest resident model is Parakeet STT (2.51 GB safetensors on Hugging Face, F32). *Removing Kokoro probably frees well under 1 GB, not 12.* The 12 GB figure needs measuring before any cloud work (trial step 0, free).
+4. *Barge-in and AEC survive remote TTS with small, known changes.* The Mac still plays the audio, so the AEC reference is still tapped from the playback callback and stays aligned by construction. The risks are jitter-induced underruns and a changed sample rate, not the AEC design.
+5. *Latency gets worse.* My estimate (unmeasured) is 0.3 to 0.6 s to first audio warm, against 0.17 to 0.23 s local. Details in section 2.
+
+*Recommendation:* do trial step 0 (measure what actually holds the memory) first. If Kokoro is small, as the numbers suggest, the better memory lever is STT (Parakeet) or MLX cache limits, not TTS. If Trevor still wants cloud TTS, try Aura-1 over WebSocket behind a flag with the local voice as fallback (section 6).
+
+*Status of evidence:* I could not reach =kb=, =~/org=, =wrangler= or Cloudflare's docs site from this cloud container (proxy policy denies =developers.cloudflare.com=). No latency was measured. Web claims come from search-result summaries and are flagged in Sources. Nothing here spent money or used a token.
+
+* What I could and could not consult
+
+- =kb search= ("voice cloud latency", "echo cancellation", "voice memory", "clef"), =kb finding:96=, =kb finding:103=, kb lesson 46, and the earlier cloud-voice latency research: *not reachable* (no =kb= binary, no =~/org= in this container). I cannot cite them and have not redone them. Someone with the Mac should run those searches and reconcile with this report; sections 2 and 5 are where the earlier numbers would slot in.
+- Repo evidence I did read: =docs/voice-conversation-plan.md=, =src/mynah/speakd.py=, =src/mynah/aec.py=, =src/mynah/listen.py=, =pyproject.toml=. The one kb reference inside the repo is "kb finding:90" (voice-conversation plan, "What exists").
+- =wrangler whoami= and any Cloudflare token: not used. Per kb lesson 46 (as given in the task), ask Trevor before using the OAuth token.
+
+* 1. What can run on Cloudflare for TTS
+
+| Option | Status | Output / streaming | Cost | Fit |
+|---|---|---|---|---|
+| Workers AI =@cf/deepgram/aura-1= | Exists (partner model, added 2025-08-27) | Raw binary PCM over WebSocket; examples send JSON =Speak= then =Flush=, and the gateway example plays 24 kHz mono 16-bit; control events =Flushed= / =Cleared=. REST is also available. | $0.015 per 1k characters (Cloudflare pricing page via search; matches Deepgram's own price) | Best candidate: streaming, interruptible |
+| Workers AI =@cf/myshell-ai/melotts= | Exists (since 2025-03-17) | One request returns the *whole utterance* as MP3 (base64 or binary). No streaming. =lang= param. | $0.0002 per audio minute (Cloudflare page via search; one third-party page says $0, trust Cloudflare) | Cheap but not streaming: latency scales with sentence length; needs MP3 decode |
+| Kokoro via Workers AI | *Not found* in the catalog or changelog | n/a | n/a | n/a |
+| Kokoro in a Cloudflare Container (CPU) | Possible | Whatever I write: HTTP chunked PCM or WebSocket | Container CPU/memory/disk billed; I did not obtain per-unit rates | Custom instances are capped at 4 vCPU / 12 GiB / 20 GB disk with at least 3 GiB per vCPU. Cold start, no measurement. |
+| Kokoro in a Container (GPU) | *Unconfirmed.* Cloudflare's product page said "GPU support (coming soon)"; the engineering blog says the platform has GPUs for internal use. | n/a | n/a | Do not plan on it |
+| Kokoro inside a Worker | Doubtful | Workers have tight CPU/memory limits; I found no example of ONNX Kokoro in Workers | n/a | Not viable as far as I can tell |
+
+Ready-made Kokoro servers exist if a container route is chosen: =fastkokoro= (ONNX Runtime, OpenAI-compatible, HTTP streaming of PCM, reports time to first chunk). Its streaming export is a third-party fixed-bucket build, not the stock model. Weak source: PyPI/GitHub listing, not benchmarked by me.
+
+Licensing note from the Kokoro model card: weights Apache-2.0, inference code MIT, and the espeak-ng phonemizer dependency is GPLv3 (matters if packaging a server).
+
+Limits I could not confirm: per-request character caps for Aura-1, WebSocket idle timeouts, concurrency limits, free daily allocation for Aura-1. Check the live model page before building.
+
+*Cold start:* Workers AI is serverless, so first-call latency to a model not recently used is unknown to me. Container cold starts are typically seconds (unmeasured). Keep a WebSocket open during voice mode to avoid both.
+
+*Measured time-to-first-audio:* none. The cloud sandbox cannot reach Cloudflare and has no Philippines vantage point. Step 2 of the trial plan measures it from the Mac with one free-tier call, after Trevor agrees.
+
+* 2. Latency budget
+
+Local today: first audio queued 0.17 to 0.23 s after the text arrives (task brief; the =speakd.py= log line =first audio queued after Ns= is the measurement point).
+
+Remote Aura-1 over an already-open WebSocket, *estimates only, unmeasured*:
+
+| Component | Estimate |
+|---|---|
+| Mac to Cloudflare edge, one-way, from the Philippines | 15 to 60 ms |
+| Edge to wherever the GPU model runs and back (Workers AI picks capacity; may be Singapore, Hong Kong, Tokyo or farther) | 20 to 150 ms |
+| Model time to first audio chunk | 100 to 300 ms (Deepgram markets low latency, but I have no verified figure) |
+| Playback prebuffer to avoid underrun | 40 to 100 ms |
+| *Total warm* | *roughly 0.3 to 0.6 s* |
+| New TLS + WebSocket handshake each reply | adds 1 to 3 round trips, *roughly 0.1 to 0.4 s more* |
+
+So expect about 2x to 3x worse than local. Keep the socket open for the length of voice mode.
+
+*Best achievable with sentence-level streaming:* the reply text arrives whole from the Stop hook, so there is no LLM token stream to overlap. What helps: send the first sentence alone (the pipeline already splits at newlines and caps replies at =MYNAH_MAX_CHARS=700=), flush it immediately, then pipeline the remaining sentences while the first plays. After the first sentence, the remote model stays ahead of playback as long as its real-time factor is under 1, so the added delay is a one-time cost on the first sentence only. MeloTTS cannot do this well (whole-utterance MP3), so sentence-by-sentence requests would each cost a round trip plus decode.
+
+* 3. Interrupts (barge-in)
+
+Barge-in today: =Speaker.stop()= bumps a token and closes the audio player (=speakd.py=); the listener triggers it from the VAD, from a key, or from =UserPromptSubmit=. Remote audio changes only what else must be stopped:
+
+- *Cancel the request.* Close the WebSocket or send Aura's =Clear= message (documented as a control event with a =Cleared= reply in the AI Gateway realtime docs) so the cloud stops generating and billing. For an HTTP stream, abort the request.
+- *Drop audio already in flight.* Bytes in the socket buffer or network after the cancel must be discarded by token check. =_speak_locked= already re-checks =token != self.token= per chunk; the remote reader needs the same check, plus draining the receive buffer.
+- *Playback flush is unchanged:* =player.flush()= plus =stop_stream()= through =_close()=, with the existing 0.15 s drain delay that avoids the CoreAudio deadlock found on 2026-11-03.
+- *Late audio from a cancelled request must not leak into the next reply.* Tag each chunk with the token and ignore stale tags.
+- *Network drop mid-reply:* treat as an interrupt, play what was buffered, then fall back (section 6).
+- *Pause (Right Command):* works unchanged because pause holds the local audio queue. Buffer more audio ahead and the pause holds more of it; no cloud change.
+
+What does not break: voice barge-in detection is entirely local (mic, AEC, VAD), so its latency does not change. Time to stop speaking after Trevor starts talking stays the local figure plus the 0.25 s sustained-speech rule.
+
+* 4. Echo cancellation
+
+=aec.py= (WebRTC AEC3 through =livekit.rtc.AudioProcessingModule=) takes the far-end reference from =TappedPlayer.callback=, which hands every block to =tap= *as it goes to the device*, after queue underrun handling (=super().callback=). That means the reference is always exactly what the speaker received, whether the audio came from Kokoro or the network. *The design does not need to change.*
+
+What to watch:
+
+1. *Sample rate.* =EchoCanceller(source_rate=24000)= resamples reference blocks from 24 kHz to 16 kHz. Kokoro outputs 24 kHz. Aura-1's example is 24 kHz linear16; if the sample rate is set differently (a third-party example used 16 kHz, unverified), pass the real rate to the player and to =source_rate=. MeloTTS returns MP3 at a rate I could not confirm; decode and resample to the player rate before queueing.
+2. *Underruns insert silence.* If the network stalls, the callback plays zeros (and taps zeros). The reference stays truthful, but AEC3's delay estimate can wobble on long gaps. Mitigation: prebuffer 100 to 200 ms before starting the stream, and log underruns in the existing reply diagnostics (=log_reply_diag=).
+3. *Playback clock.* The reference is taken at the output callback, so the network's clock never touches it. The Mac's output device clock versus its input clock is the only drift, and that already exists today. No change.
+4. *Buffering delay.* AEC3 estimates the render-to-capture delay itself; =set_stream_delay_ms= (currently 120 ms) is only a hint. A larger app-side buffer does not change the delay between the speaker callback and the mic, because the tap is at the callback. *Do not feed the reference at network-arrival time*: that would add the buffer depth as error and exceed AEC3's delay range (a LiveKit community report, weak source, says variable echo delays of 1 to 2 s made AEC3 fail silently with about 0 dB reduction).
+5. *Voice change.* AEC3 adapts to the room, not the voice, but the first seconds after a new voice or level may cancel less. The existing =deaf_until= grace and the =aec.reset_reference()= call at the start of each reply already cover this.
+6. *Re-measure.* Compare the "peak voice probability after echo cancellation vs barge threshold" line from =log_reply_diag= for a Kokoro reply and an Aura reply on laptop speakers before trusting voice barge-in with the new voice.
+
+* 5. What stays local, and memory
+
+Stays local (all of it is latency- or privacy-critical):
+
+| Piece | Where | Why |
+|---|---|---|
+| Microphone capture | =listen.py= (sounddevice) | Hardware |
+| VAD (Silero, 32 ms frames) | local, mlx-audio | Needs to run per frame, small |
+| AEC (WebRTC AEC3) | local, =aec.py= | Needs the played signal at sample level |
+| Playback | local, =TappedPlayer= | Reference tap and lipsync clock |
+| Speaker verification (speechbrain) | local | Voiceprint should not leave the Mac |
+| STT (Parakeet TDT 0.6B v3) | local by default | See below |
+
+*STT can move, but I do not recommend it first.* Workers AI also has Deepgram =nova-3= and a Flux speech model (Cloudflare changelog 2025-10-02 says they combine with Aura-1 for voice agents). Cloud STT would stream the AEC-cleaned mic audio out, a privacy change for a mic that is always open in voice mode, adds latency to the end-of-turn path, and costs per minute. It would however save the biggest resident model (Parakeet).
+
+*Memory without Kokoro, from what I can support:*
+
+- Kokoro-82M bf16: about 0.17 GB of weights (computed), plus voice packs and activations.
+- Parakeet TDT 0.6B v3: 2.51 GB safetensors on Hugging Face, F32 (listing via search; runtime peak not published).
+- Silero VAD: about 2 MB (the repo's own plan says "~2 MB weight download").
+- speechbrain voiceprint model: not measured here.
+- The repo reports "about 3.6 GB went back to the system" when all voice models unload (=speakd.py:481=) and sets a 4 GB MLX wired limit (=speakd.py:457=).
+
+So the repo's own figures suggest the whole model set is about 3.6 GB, and Kokoro is a small share. Where a 12 GB process footprint comes from (MLX buffer cache, Python and spaCy, speechbrain/torch, kept-warm allocations, Metal caches) is unexplained by the sources I have. *This is the key open question.* Without it, moving Kokoro may not fix the memory problem.
+
+* 6. Recommendation, risks, trial plan, fallback
+
+*Recommendation.* Do step 0 first. Do not commit to cloud TTS until the measurement shows Kokoro is the big consumer. If it is not, spend the effort on STT unload/streaming, =mx.set_cache_limit=, or sleeping the TTS model between replies (=sleep_main= already unloads after 300 s idle).
+
+*Risks.*
+
+| Risk | Severity | Note |
+|---|---|---|
+| Premise (Kokoro = 12 GB) is wrong | High | Section 5; check first |
+| Different voice, no phoneme timeline | Medium | Mouth falls back to loudness; Trevor's =af_heart= identity lost |
+| First-audio latency 2x to 3x worse | Medium | Estimates only |
+| Network down or flaky Wi-Fi | Medium | Needs fallback below |
+| Cost | Low | At $0.015 per 1k characters, a 700-character cap is about $0.01 per reply worst case, about $1 per 100 replies |
+| Reply text leaves the machine | Medium | Replies can contain code or private project text. Needs Trevor's OK, and a strip/skip rule for secrets |
+| Aura-1 only English and fixed voices | Low | Fine for current use |
+| Cloudflare limits and rates not verified | Medium | Verify against live docs and model page before building |
+| Claims in this report from search summaries | Medium | Re-verify the Aura WebSocket message format before coding |
+
+*Cheapest-first trial plan.* Steps 0 and 4 cost nothing; steps 2 and 3 need Trevor's yes first.
+
+0. *Measure memory locally ($0, no Cloudflare).* On the Mac, with speakd loaded: log =mx.get_active_memory()= and =mx.get_peak_memory()= after each model load (Kokoro, Parakeet, Silero, speechbrain), and the process RSS (=ps -o rss=). Decide if Kokoro matters.
+1. *Ask Trevor* before touching Cloudflare: OK to run =wrangler whoami= (read-only)? OK to use his OAuth token for a Worker deploy (kb lesson 46)? Acceptable spend cap (suggest $1)? OK to send test sentences (not real replies) to Deepgram via Cloudflare?
+2. *Latency probe ($0 to cents).* One tiny Worker with an =ai= binding that calls =@cf/deepgram/aura-1= and returns the stream; from the Mac run =curl -w= (time_starttransfer) and a Python WebSocket client that records time to first binary frame, 20 runs warm and 5 cold, for a 1-sentence and a 3-sentence text. Compare with the =first audio queued after= log line for Kokoro. Record the Cloudflare colo (=cf-ray= header) to see where inference ran.
+3. *Prototype behind a flag.* In =speakd.py= add a =RemoteSpeaker= with =MYNAH_TTS=cloud=: persistent WebSocket, token-stamped chunks, prebuffer 150 ms, Clear on stop, same =player.queue_audio= path (so AEC tap and lipsync work unchanged). Unit-test the cancel path with a fake socket.
+4. *Echo test.* Play an Aura reply on laptop speakers and compare the post-AEC peak voice probability with a Kokoro reply (existing =log_reply_diag=); confirm voice barge-in still cuts in.
+5. *Decide.* Keep only if latency is acceptable and memory actually drops.
+
+*Fallback if the network is down.* In order of cost:
+
+1. Immediate: macOS =say= (system voice, near-zero memory). The repo already has =hooks/speaker.applescript=. Route it through the same player if the AEC reference is needed, otherwise run barge-in in key mode (half-duplex) while it speaks; AEC cannot cancel audio it was not given.
+2. Slower: lazily load local Kokoro on first failure (cold generation about 8 s per =speakd.py= docs), and let the existing idle sleep unload it again.
+3. Detect failure fast: a 300 ms connect timeout and a 1 s first-byte timeout, then fall back for the rest of that reply; retry the cloud on the next reply.
+
+* Sources
+
+Repo (read in this session):
+- =docs/voice-conversation-plan.md=, =src/mynah/speakd.py=, =src/mynah/aec.py=, =src/mynah/listen.py=, =pyproject.toml= in trotha01/mynah.
+
+Cloudflare (found via search; the docs site itself was blocked in this container, so these are search-result summaries, not pages I read in full):
+- Workers AI pricing: https://developers.cloudflare.com/workers-ai/platform/pricing/ (Aura-1 $0.015/1k chars, MeloTTS $0.0002/min). Official, not opened.
+- Deepgram and Leonardo partner models (Aura-1, WebSocket Speak/Flush): https://developers.cloudflare.com/changelog/post/2025-08-27-partner-models/ . Official changelog.
+- AI Gateway realtime API (raw PCM 24 kHz mono 16-bit, Flushed/Cleared events): https://developers.cloudflare.com/ai-gateway/usage/websockets-api/realtime-api/ . Official.
+- MeloTTS model page (base64 MP3, =lang=): https://developers.cloudflare.com/workers-ai/models/melotts . Official.
+- Workers AI new models (MeloTTS first TTS, 2025-03-17): https://developers.cloudflare.com/changelog/post/2025-03-17-new-workers-ai-models/ . Official.
+- Deepgram Flux (STT; =nova-3= + =aura-1= voice agents): https://developers.cloudflare.com/changelog/post/2025-10-02-deepgram-flux/ . Official.
+- Containers limits and custom instance types: https://developers.cloudflare.com/containers/platform-details/limits/ and https://developers.cloudflare.com/changelog/2026-01-05-custom-instance-types . Official, figures via search summary.
+- Container platform blog (GPU only internal, gVisor vs Firecracker): https://blog.cloudflare.com/container-platform-preview . Official but dated; *weak on current GPU status*, which I could not confirm.
+- Cloudflare Containers product page ("GPU support (coming soon)"): https://www.cloudflare.com/products/containers.md . Official, undated.
+
+Models:
+- Kokoro-82M model card (Apache-2.0 weights, 82 M params, espeak-ng GPLv3): https://huggingface.co/hexgrad/Kokoro-82M
+- Parakeet TDT 0.6B v3 MLX weights (2.51 GB): https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3/tree/main
+- fastkokoro (third-party Kokoro ONNX server): https://github.com/msgflux/fastkokoro and https://pypi.org/project/fastkokoro/ . *Weak*: third-party, not benchmarked.
+
+Echo cancellation:
+- LiveKit AudioProcessingModule reference: https://docs.livekit.io/reference/client-sdk-cpp/classlivekit_1_1AudioProcessingModule.html . Official, for =set_stream_delay_ms=.
+- LiveKit community thread on server-side AEC with 1 to 2 s variable delay: https://community.livekit.io/t/server-side-echo-cancellation-on-pstn-audio-advice-delay-limits-and-recommended-config/1789 . *Weak*: one user's report.
+- Rust aec3 port README, advice on feeding far-end frames: https://docs.rs/crate/aec3/0.1.1/source/README.md . *Weak*: third-party port.
+
+Weak or conflicting, do not rely on:
+- A third-party estimator showing MeloTTS at $0.00 per million tokens (conflicts with Cloudflare's $0.0002/min).
+- A third-party blog using Aura-1 with =encoding: linear16, sample_rate: 16000= (conflicts with the 24 kHz gateway example): https://callsphere.ai/blog/vw2h-build-voice-agent-cloudflare-workers-ai-no-external-llm
+- A Northflank article claiming Cloudflare Containers have no GPU (competitor).
+- A tutorial claiming 4 GB free memory for Parakeet (secondary, partly unreliable).
+- Search results from =previews.developers.cloudflare.com= and mirror sites: content may differ from the live docs.
+- Deepgram marketing latency claims: not used as numbers.
+
+Not consulted (unreachable): kb entries (voice cloud latency, echo cancellation, voice memory, clef, finding:96, finding:103, lesson 46), =~/org= reports, the earlier cloud-voice latency research.

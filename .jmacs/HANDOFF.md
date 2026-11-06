@@ -2,9 +2,10 @@
 ## Objective
 Research whether Kokoro TTS can move to Cloudflare while keeping barge-in and AEC; deliver docs/cloud-voice-REPORT.org.
 ## Done
-- Read mynah repo: speakd.py, aec.py, listen.py, docs/voice-conversation-plan.md.
-- kb / ~/org / wrangler are NOT reachable in this cloud container (cannot cite kb finding:96/103, lesson 46).
+- Read mynah repo (speakd.py, aec.py, listen.py, voice plan) and wrote docs/cloud-voice-REPORT.org (Verdict first, sources last).
+- Web research via search summaries (Cloudflare docs host is blocked in this container).
 ## Pending
-- Web research (Cloudflare Workers AI TTS models, Containers/GPU, pricing, streaming), write report.
+- Merge PR to main (in progress).
+- Needs a Mac session: kb searches / finding:96,103 / lesson 46 and ~/org reports (unreachable here), trial step 0 memory measurement, latency probe (needs Trevor's OK for Cloudflare token).
 ## Next step
-Fetch Cloudflare docs; write report; commit, push, PR, merge.
+Trevor: read Verdict; answer the step-1 questions (wrangler whoami OK? spend cap?) if he wants the latency probe.

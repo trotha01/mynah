@@ -8,7 +8,11 @@
   - natural blinks: every 4-8 s, ~170 ms, occasionally a double blink, never in the middle of a loud word;
   - glances every 1.6-3 s (thinking) / 1.8-3.5 s (otherwise); mouth openness follows the audio level (fast) and the
     mouth SHAPE (a/e/i/o/u) is picked once per syllable;
-  - worker-news reactions, thinking dots, and an occasional emphasis squint while speaking. */
+  - worker-news reactions (only while she is NOT speaking) and thinking dots;
+  - while she speaks the face follows the CONTENT of the reply: from the word list speakd publishes (vis.wd) the reply is
+    split into sentences and clauses, each is given a tone by a small word table (question, good news, bad news, apology,
+    caution, doubt, enthusiasm, greeting, plain) and the tone picks one expression of the set plus a few parameter tweaks.
+    The track is built once per reply and followed with the wall clock (the karaoke's mapping). Nothing is random. */
 (function (g) {
   const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
   const rnd = (a, b) => a + Math.random() * (b - a);
@@ -29,6 +33,96 @@
   // minimum time (ms) an expression is shown before the director may switch away from it (readable, no flash)
   const HOLD = { neutral: 400, listening: 500, thinking: 800, happy: 1400, speaking: 500, surprised: 1000, concerned: 1400, sleep: 400 };
   const DEBOUNCE = 300;   // ms a state must last before the face reacts to it
+
+  // ---- expression track: the face follows the words ----
+  const SET = (s) => new Set(s.split(' '));
+  const APOL = SET("sorry apologize apologise apologies apologizing forgive oops");
+  const BAD = SET("failed fail fails failing failure error errors broken blocked cannot can't couldn't unable crashed crash stuck denied refused problem problems issue issues wrong lost unfortunately bad rejected");
+  const NEGATABLE = SET("failed fail fails failing failure error errors problem problems issue issues wrong broken crashed blocked stuck");
+  const NEG = SET("no not never without zero nothing none didn't doesn't isn't wasn't hasn't haven't won't");
+  const WARN = SET("warning danger dangerous irreversible permanently permanent beware");
+  const CAUTION = SET("careful carefully caution risky important");
+  const RELIEF_PH = /\b(nothing (needs|to do|new|urgent)|all clear|no (new|urgent)|no worries|no problem)\b/;
+  const REQUEST_PH = /\b(waiting for you|needs you|need you to|waiting on you|please|pick a|your call|your turn)\b/;
+  const RESOLVE_PH = /\b(i will|i'll|let me|i'm going to|going to try|try again|next)\b/;
+  const CAUTION_PH = /\b(make sure|watch out|be aware|don't forget|heads up|double.check|be careful|think twice)\b/;
+  const DOUBT = SET("maybe perhaps probably possibly might unsure unclear seems apparently");
+  const DOUBT_PH = /\b(i think|i guess|i believe|i suspect|not sure|not certain|could be|hard to say|i'm not (sure|certain)|if i remember)\b/;
+  const ENTH = SET("great awesome wonderful fantastic excellent amazing thanks thank perfect love congratulations congrats yay glad delighted brilliant nice wow cool");
+  const GOOD = SET("done finished works worked fixed found success successful successfully passed complete completed ready resolved solved merged deployed installed saved sent");
+  const GOOD_PH = /\b(all set|up and running|good news|went through|came through)\b/;
+  const GREET = SET("hello hi hey");
+  // tone -> one expression of the set + parameter tweaks (brow, smile, tilt, head roll, gaze); no new switching
+  const TONE = {
+    neutral:  { e: 'speaking' },
+    question: { e: 'listening', m: { browL: .4, browR: .32, roll: 4, smile: .45 } },
+    greeting: { e: 'speaking',  m: { smile: .8, blush: .3, browL: .3, browR: .3 } },
+    good:     { e: 'happy',     m: { squint: .7, smile: .9 } },
+    enthusiasm: { e: 'happy',   m: { open: 1.08, blush: .7, browL: .6, browR: .6 } },
+    bad:      { e: 'concerned' },
+    apology:  { e: 'concerned', m: { tilt: -1.1, browL: .55, browR: .55, smile: -.35, roll: -4, gy: .4 } },
+    caution:  { e: 'concerned', m: { tilt: .5, browL: .8, browR: .15, smile: -.35, alert: 1, roll: -2, gy: 0, open: 1.05 } },
+    warning:  { e: 'concerned', m: { tilt: .7, browL: .95, browR: .4, smile: -.6, alert: 1.2, open: 1.15, roll: -2, gy: 0 } },
+    relief:   { e: 'speaking',  m: { smile: .8, blush: .35, squint: .3, browL: .05, browR: .05, open: .95 } },
+    request:  { e: 'listening', m: { browL: .5, browR: .5, open: 1.15, roll: 4, smile: .3, alert: .9 } },
+    resolve:  { e: 'speaking',  m: { browL: .4, browR: .4, smile: .6, alert: .9, roll: 2, open: 1.05 } },
+    doubt:    { e: 'thinking',  m: { dots: 0, smile: -.1, gx: -.9, gy: -.9, browL: .85, browR: -.15, tilt: .5, roll: -5 } }
+  };
+  const norm = (t) => t.toLowerCase().replace(/[’‘]/g, "'").replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, '');
+  /* classify one clause (array of word strings) -> [tone, index of the word that decided it] */
+  function classify(ws, first) {
+    const n = ws.map(norm), text = n.join(' ');
+    const negated = (i) => { for (let k = Math.max(0, i - 3); k < i; k++) if (NEG.has(n[k]) || /n't$/.test(n[k])) return true; return false; };
+    let hit = (set, neg) => { for (let i = 0; i < n.length; i++) if (set.has(n[i]) && (neg === undefined || negated(i) === neg)) return i; return -1; }, i;
+    if ((i = hit(APOL)) >= 0) return ['apology', i];
+    if ((i = hit(BAD, false)) >= 0) return ['bad', i];
+    if ((i = hit(GOOD, true)) >= 0) return ['bad', i];                 // "didn't work", "not ready"
+    if ((i = hit(NEGATABLE, true)) >= 0) return ['good', i];           // "no errors"
+    if ((i = hit(WARN)) >= 0) return ['warning', i];
+    if ((i = hit(CAUTION)) >= 0 || CAUTION_PH.test(text)) return ['caution', Math.max(0, i)];
+    if ((i = hit(DOUBT)) >= 0 || DOUBT_PH.test(text)) return ['doubt', Math.max(0, i)];
+    if ((i = hit(ENTH, false)) >= 0) return ['enthusiasm', i];
+    if ((i = hit(GOOD, false)) >= 0 || GOOD_PH.test(text)) return ['good', Math.max(0, i)];
+    if (RELIEF_PH.test(text)) return ['relief', 0];
+    if (REQUEST_PH.test(text)) return ['request', 0];
+    if (RESOLVE_PH.test(text)) return ['resolve', 0];
+    if (first && GREET.has(n[0])) return ['greeting', 0];
+    return ['neutral', 0];
+  }
+  /* wd = [[n, start, end, text, opensLine]..] -> cues [{i: word index where the tone starts, tone}] */
+  function buildTrack(wd) {
+    const raw = []; let s0 = 0;
+    for (let i = 0; i < wd.length; i++) {
+      const t = wd[i][3].trim(), last = i === wd.length - 1, endS = /[.!?…]["')\]]*$/.test(t) || last || (wd[i + 1] && wd[i + 1][4]);
+      if (!endS) continue;
+      const q = /\?["')\]]*$/.test(t); let c0 = s0, lead = null;   // lead: a short opener ("Careful," "Sorry," "Great news,") sets the tone of the whole sentence
+      for (let j = s0; j <= i; j++) {
+        const tj = wd[j][3].trim();
+        if (j === i || /[,;:]["')\]]*$/.test(tj) || /[—–]$/.test(tj) || (wd[j + 1] && /^[—–-]$/.test(wd[j + 1][3].trim()))) {
+          let [tone, k] = classify(wd.slice(c0, j + 1).map(w => w[3]), c0 === s0);
+          if (tone === 'neutral' && lead) { tone = lead; k = 0; }
+          else if (tone !== 'neutral' && c0 === s0 && j - c0 < 3 && ['apology', 'caution', 'warning', 'enthusiasm', 'good'].includes(tone)) lead = tone;
+          if (tone === 'neutral' && q) tone = 'question';
+          raw.push({ i: ['neutral','question','greeting','relief','request','resolve'].includes(tone) ? c0 : Math.max(c0, c0 + k - 1), tone });
+          c0 = j + 1;
+        }
+      }
+      s0 = i + 1;
+    }
+    const m = []; for (const c of raw) if (!m.length || m[m.length - 1].tone !== c.tone) m.push(c);   // same tone in a row: one cue
+    // minimum hold: a shown expression stays for at least its HOLD (a calm face may be cut by a stronger tone at once)
+    const cues = [], T0 = (c) => wd[c.i][1] - .08;
+    for (let k = 0; k < m.length; k++) {
+      let ts = T0(m[k]); const prev = cues[cues.length - 1];
+      if (prev && prev.tone !== 'neutral' && TONE[prev.tone].e !== TONE[m[k].tone].e) ts = Math.max(ts, prev.ts + (HOLD[TONE[prev.tone].e] || 1200) / 1000);
+      if (m[k].tone === 'neutral' && k + 1 < m.length && ts >= T0(m[k + 1])) continue;       // too late to matter: the next tone takes over
+      let i = m[k].i; while (i < wd.length && wd[i][1] - .08 < ts - 1e-6) i++;
+      if (i >= wd.length) continue;
+      cues.push({ i, tone: m[k].tone, ts: wd[i][1] - .08 });
+    }
+    return cues;
+  }
+  g.CMP_TRACK = { buildTrack, classify, TONE };
   const VIS_SHAPE = { M: 'c', A: 'a', E: 'e', I: 'i', O: 'o', U: 'u' };   // viseme.py shapes -> the looks' mouth shapes
   const GLANCES = [[-1, -.9], [1, -.8], [0, -1.1], [-.8, -.2], [.9, -.3]];
 
@@ -97,36 +191,47 @@
         const prev = this.stable; this.stable = this.cand;
         if (prev === 'speaking' && (this.stable === 'hearing' || this.stable === 'transcribing')) this.bargeUntil = t + 700;
       }
-      const st = (t < this.bargeUntil) ? 'barge' : this.stable; this.shown = st;
+      let st = (t < this.bargeUntil) ? 'barge' : this.stable;
+      // the reply being spoken: its expression track (built once per reply from vis.wd, followed with the wall clock)
+      const wall = IN.wall != null ? IN.wall : Date.now() / 1000, tw = wall - (IN.lipLag || 0) / 1000;
+      let tone = null;
+      const WD = IN.vis && IN.vis.wd && wall - IN.vis.w < .5 && IN.vis.wd.length ? IN.vis.wd : null;
+      if (WD && st !== 'off' && st !== 'barge' && st !== 'hearing') {
+        const sig = WD.length + ':' + WD[0][0] + ':' + WD[WD.length - 1][0];
+        if (sig !== this.trSig) { this.trSig = sig; this.trCues = buildTrack(WD); }
+        if (tw >= WD[0][1] - .3 && tw <= WD[WD.length - 1][2] + .6) {
+          tone = 'neutral'; for (const c of this.trCues) if (WD[c.i][1] - .08 <= tw) tone = c.tone; else break;
+          st = 'speaking';                                  // a gap between sentences is not a state change, and a note must not cut in
+        }
+      }
+      this.shown = st; this.tone = tone;
       const quietish = ['listening', 'waiting', 'transcribing', 'loading'].includes(st);
       // 1. director: which single expression do we want, and may we switch yet?
       let want = 'neutral';
       if (st === 'off') want = 'sleep';
       else if (st === 'barge') want = 'surprised';
+      else if (tone) want = TONE[tone].e;
       else if (t < IN.noteUntil && quietish) want = IN.noteKind === 'needs_you' ? 'surprised' : IN.noteKind === 'blocked' ? 'concerned' : 'happy';
       else if (st === 'waiting' || st === 'transcribing') want = 'thinking';
       else if (st === 'speaking') want = 'speaking';
       else if (st === 'hearing' || st === 'listening') want = 'listening';
-      if (!D.cur) { D.cur = want; D.since = t; }
+      if (!D.cur || (tone && want !== D.cur)) { D.cur = want; D.since = t; }   // the track already respects the holds
       else if (want !== D.cur) {
         const urgent = st === 'barge' && want === 'surprised';
         if (urgent ? t - D.since > 200 : t - D.since >= (HOLD[D.cur] || 1200)) { D.cur = want; D.since = t; }
       }
-      const X = EXPR[D.cur], T = { ...X };
+      const X = EXPR[D.cur], T = { ...X, ...(tone ? TONE[tone].m : null) };
       // 2. modifiers on top of the held expression (continuous, no switching)
       this.env += (level - this.env) * (1 - Math.exp(-dt / 160)); this.base += (level - this.base) * (1 - Math.exp(-dt / 2500));
       if (st === 'hearing') { T.pup += .12; T.alert += .3; T.open += .05; }
       if (st === 'speaking') {
-        T.browL += this.env * .3; T.browR += this.env * .3; T.open += this.env * .1; T.alert += this.env * .4;
-        if (IN.q) { T.browL += .3; T.browR += .22; T.roll += 3; }
-        if (this.env > .38 && this.env > this.base * 1.6 && t - this.emphT > 2500) this.emphT = t;
-        const age = t - this.emphT, e = age < 450 ? 1 : clamp(1 - (age - 450) / 350, 0, 1), s = e * e * (3 - 2 * e);   // an emphasis squint: on for ~0.5 s, then back
-        T.squint += s * .45; T.blush += s * .2; T.browL += s * .2; T.browR += s * .2;
+        T.open += this.env * .1;                            // loudness only opens the eyes a hair; it never picks an expression
+        if (!tone && IN.q) { T.browL += .3; T.browR += .22; T.roll += 3; }   // no word list: fall back to the question flag
       }
       T.roll += Math.sin(t / 2600) * .8;
       // 3. gaze: slow glances
       let big = 0;
-      if (D.cur === 'thinking') {
+      if (D.cur === 'thinking' && !tone) {
         const gl = this.glance;
         if (t > gl.next) { gl.i = (gl.i + 1 + Math.floor(Math.random() * 3)) % GLANCES.length; gl.next = t + rnd(1600, 3000); big = 1; }
         T.gx = GLANCES[gl.i][0]; T.gy = GLANCES[gl.i][1];
@@ -151,9 +256,7 @@
       let mT = X.mouth || 0, vis = null;
       const V = IN.vis;
       if (V && V.ev && st !== 'off') {
-        const wall = Date.now() / 1000;
         if (wall - V.w < .3) {
-          const tw = wall - (IN.lipLag || 0) / 1000;
           vis = { shape: 'M', open: 0 };
           for (const e of V.ev) { if (e[0] <= tw && tw < e[1]) { vis = { shape: e[2], open: e[3] }; break; } }
         }

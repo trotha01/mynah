@@ -24,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import lipsync, viseme
+from . import audiowatch, lipsync, viseme
 from .listen import Listener, mode_on
 from .transcript import strip_markdown_for_speech
 
@@ -63,8 +63,9 @@ def refresh_audio_devices():
     """PortAudio snapshots the device list once and misses Bluetooth reconnects (see main.py)."""
     import sounddevice as sd
     try:
-        sd._terminate()
-        sd._initialize()
+        with audiowatch.audio_lock("refresh_audio_devices"):   # never under another thread's stream stop / mic open
+            sd._terminate()
+            sd._initialize()
     except Exception as e:
         logger.warning(f"Could not refresh audio device list: {e}")
 
@@ -145,12 +146,54 @@ def tapped_player_class():
                 return
             if self.lipsync is not None:
                 self.lipsync.on_block(frames, time_info)   # only records where the stream is (the mouth timeline)
+            import sounddevice as sd
             try:
                 super().callback(outdata, frames, time_info, status)
+                self._silent = 0
+            except sd.CallbackStop:
+                # AudioPlayer raises CallbackStop on an empty buffer, which makes PortAudio stop the audio unit from
+                # the IO thread (startStopCallback) while _close stops it from Python: the lock cycle in
+                # speakd-hang.sample. Swallow it: the stream keeps running on silence and only _close (or start_stream
+                # below, when more audio arrives after an underrun) stops it.
+                # The two mlx-audio versions differ in who signals "drained" (tested 0.5.6 and 0.6.4):
+                #   0.5.6: this callback itself sets playing=False and drain_event (audio_player.py:45-46) before raising;
+                #   0.6.4: only the stream's finished_callback sets drain_event (:49-53), which never fires now.
+                # So set both here, never relying on either version: playing=False (so queue_audio / wait_for_drain
+                # know the stream is idle) and, from the second consecutive silent block on, drain_event (one block
+                # after the last real one, so the tail is not clipped by _close; 0.5.6 already sets it on the first).
+                self.playing = False
+                self._silent = getattr(self, "_silent", 0) + 1
+                if self._silent >= 2:
+                    self.drain_event.set()
             finally:  # also when the last block ends the stream (CallbackStop)
                 if self.tap is not None:
                     self.tap(outdata[:, 0])
                 write_level(outdata[:, 0])
+
+        def start_stream(self):
+            """Never leave an old stream running when a new one is started (an underrun mid-reply, then more audio).
+            callback() swallows CallbackStop, so the old stream is still open and pulling from the shared buffer:
+            mlx-audio 0.5.6's start_stream just overwrites self.stream (audio_player.py:49-59), leaking it and playing the
+            rest of the reply about twice as fast; 0.6.4 stops the old stream itself (:58-59) but unbounded and outside
+            AUDIO_LOCK. Do it here for both: under AUDIO_LOCK (re-entrant, the same lock _close takes, and nothing else is
+            taken inside it), bounded by STOP_TIMEOUT, errors logged. After _close, start nothing (it would leak)."""
+            with audiowatch.audio_lock("start_stream"):
+                if getattr(self, "_mynah_closed", False):
+                    self.drain_event.set()   # 0.5.6's wait_for_drain would wait for ever on a stream that never starts
+                    return
+                old, self.stream = self.stream, None
+                if old is not None:
+                    def stop_old():
+                        try:
+                            old.stop()
+                        finally:
+                            old.close()
+                    finished, err = audiowatch.run_timed(stop_old, audiowatch.STOP_TIMEOUT, "old-stream-stop")
+                    if not finished:
+                        audiowatch.WEDGE.trigger(f"stopping the previous stream did not return within {audiowatch.STOP_TIMEOUT:.1f}s")
+                    elif err is not None:
+                        logger.warning(f"Stopping the previous stream failed: {err!r}")
+                super().start_stream()
     return TappedPlayer
 
 
@@ -160,8 +203,8 @@ class Speaker:
         logger.info(f"Loading {MODEL_ID}...")
         self.model = load_model(MODEL_ID)
         self.lock = threading.Lock()      # guards token and player
-        self.run_lock = threading.Lock()  # one generation at a time
-        self.close_lock = threading.Lock()  # AudioPlayer.stop_stream is not thread-safe (see _close)
+        self.run_lock = audiowatch.HoldClock()  # one generation at a time (the watchdog reads how long it has been held)
+        self.close_lock = audiowatch.AUDIO_LOCK  # AudioPlayer.stop_stream is not thread-safe (see _close); also guards refresh/mic
         self.token = 0                    # bumped by every say/stop; a stale _speak stops itself
         self.player = None
         self.speaking = False             # a reply is queued or playing (the listener reads it)
@@ -238,17 +281,19 @@ class Speaker:
         """Drop what is buffered and close the stream. An interrupt and the end of the speech both do this
         from different threads, and racing in stop_stream (one sets stream to None between the other's stop
         and close) crashed the process."""
-        with self.close_lock:
-            try:
+        try:
+            with audiowatch.audio_lock("close"):
+                if getattr(player, "_mynah_closed", False):
+                    return   # the other of stop() / end of speech got here first: never stop a stream twice
+                player._mynah_closed = True
                 lip = getattr(player, "lipsync", None)
                 if lip is not None:
                     lip.stop()   # the audio is cut: the mouth must stop with it
-                player.flush()
-                player.stop_stream()
+                audiowatch.timed_stop(player)   # flush + stop_stream, bounded: a CoreAudio wedge restarts speakd
                 if lip is not None:
                     lip.stop()   # a last callback may have run in between
-            except Exception as e:
-                logger.warning(f"Closing the audio stream failed: {e}")
+        except Exception as e:
+            logger.warning(f"Closing the audio stream failed: {e}")
 
     def say(self, text):
         self.stop()
@@ -274,7 +319,7 @@ class Speaker:
             if self.listener is not None:
                 self.listener.release_mic()  # PortAudio cannot be re-initialised under an open input stream
             refresh_audio_devices()
-            player = tapped_player_class()(sample_rate=self.model.sample_rate)
+            player = audiowatch.locked_call("open", lambda: tapped_player_class()(sample_rate=self.model.sample_rate))
             if self.listener is not None:
                 player.tap = self.listener.aec.tap
                 self.listener.aec.reset_reference()
@@ -461,6 +506,26 @@ def wire_model_memory():
         logger.warning(f"Could not set the MLX wired limit: {e}")
 
 
+def _restart_after_wedge(reason):
+    """audiowatch.WEDGE.restart: replace this process with a fresh speakd. exec keeps the pid, so the applet and the
+    shell that started it (still alive in the 2026-11-05 sample: bash [42269]; the earlier recovery had to kill the applet
+    and its sh) stay its parent and nothing new is orphaned. The pid file holds our own pid, which the new image would read as "Already running": drop it.
+    If exec itself hangs, a detached shell kills this pid and starts the speaker the way `claude-speak Start` does."""
+    PIDFILE.unlink(missing_ok=True)
+    write_state("loading")
+    app = os.getenv("MYNAH_SPEAKER_APP", str(Path.home() / ".local/share/mynah/Mynah Speaker.app"))
+    python = Path.home() / ".local/share/uv/tools/mynah/bin/python"
+    cmd = audiowatch.fallback_command(os.getpid(), app, os.getenv("MYNAH_PYTHON", str(python)))
+    def last_resort():
+        logger.error("exec did not replace the process: killing it from a detached shell and starting it again")
+        subprocess.Popen(["/bin/sh", "-c", cmd], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    timer = threading.Timer(audiowatch.KILL_FALLBACK_SECONDS - 1, last_resort)
+    timer.daemon = True
+    timer.start()
+    _reexec()
+
+
 def _reexec(*args):
     """Replace this process with a fresh `python -m mynah.speakd` (same pid, same desktop session, so the key watcher keeps
     working). This is how the models are unloaded (sleep) and loaded again (wake): a new process image frees all of the old one."""
@@ -554,7 +619,12 @@ def main():
         pause_key = None
     listener = Listener(speaker, suspended=(hold.held if hold is not None else (lambda: False)))
     speaker.listener = listener
+    # Wedge recovery (src/mynah/audiowatch.py): timed stream stop, one lock for PortAudio, a watchdog on the inbox.
+    audiowatch.WEDGE.configure(restart=_restart_after_wedge, state_dir=INBOX.parent)
+    listener.open_mic = audiowatch.serialized(listener.open_mic, "open_mic")
+    listener.release_mic = audiowatch.serialized(listener.release_mic, "release_mic")
     listener.start()  # idle (no microphone, no models) until ~/.config/jmacs/voice-conversation exists
+    audiowatch.Watchdog(speaker, INBOX, stop_speech=speaker.stop).start()
     logger.info(f"Ready; watching {INBOX}")
     last_activity = time.time()
     was_held = False
